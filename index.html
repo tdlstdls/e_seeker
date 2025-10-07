@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>イベントガチャ SEEDシーカー</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.4;
+            padding: 10px;
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #f4f7f9;
+            color: #333;
+            font-size: 14px;
+        }
+        .container {
+            background: #fff;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #004085;
+            font-size: 1.2rem;
+            border-bottom: 1px solid #e9ecef;
+            padding-bottom: 5px;
+            margin-top: 0;
+            text-align: center;
+        }
+        .controls, .sequence-inputs, .results-container {
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: #f9fbfd;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+        }
+        /* Seeker Table Styles */
+        #seeker-table-container {
+            overflow-x: auto;
+            margin-bottom: 10px;
+        }
+        .seeker-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .seeker-table th, .seeker-table td {
+            border: 1px solid #ddd;
+            padding: 6px;
+            text-align: left;
+            font-size: 0.8rem;
+            vertical-align: middle;
+        }
+        .seeker-table th {
+            background-color: #f2f2f2;
+        }
+        .seeker-table th:nth-child(1) { width: 10%; }
+        .seeker-table th:nth-child(2) { width: 15%; }
+        .seeker-table th:nth-child(3) { width: 75%; }
+        .seeker-table td:nth-child(1) { text-align: center; }
+        .seeker-table td:nth-child(2) { font-weight: bold; }
+        .radio-options {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+        }
+        .selected-row {
+            background-color: #e7f3ff !important; /* Light blue highlight */
+        }
+        .radio-options label {
+            font-size: 0.75rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: flex-end;
+        }
+        .input-item {
+            flex: 1 1 200px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        label { font-weight: 600; color: #555; }
+        input[type="number"], select {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+
+
+
+
+        .sequence-inputs h2 { font-size: 1rem; margin-top: 0; }
+        .sequence-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+        }
+        .sequence-item { display: flex; flex-direction: column; }
+
+
+
+
+        #results-area {
+            list-style-type: none;
+            padding: 0;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #fff;
+        }
+        #results-area li {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+        }
+        #results-area li:last-child { border-bottom: none; }
+        #status { font-weight: bold; color: #004085; min-height: 1.2em; white-space: pre-wrap; }
+        .note { font-size: 0.8rem; color: #666; margin-top: 5px; }
+        .hidden-control {
+            display: none !important;
+        }
+        /* New styles for search buttons */
+        #search-buttons-container {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        #searchButton { background-color: #28a745; } /* 全件検索: Green */
+        #partialSearchButton { background-color: #007bff; } /* 部分検索: Blue */
+        
+    </style>
+</head>
+<body>
+
+
+
+
+<div class="container">
+    <h1>イベントガチャ SEEDシーカー</h1>
+
+
+
+
+    <div class="controls">
+        <div class="row">
+            <div class="input-item">
+                <label for="gachaIdSelector">ガチャ</label>
+                <select id="gachaIdSelector"></select>
+            </div>
+        </div>
+        <div class="row">
+            <div class="input-item">
+                <label for="startSeed">検索開始SEED</label>
+                <input type="number" id="startSeed" value="">
+                <p class="note" id="startSeedNote">過去のSEEDが分かれば検索時間短縮のため入力してください。</p>
+            </div>
+        </div>
+    </div>
+
+
+
+
+    <div class="sequence-inputs">
+        <h2>ガチャ結果シーケンス (15回)</h2>
+        <div id="seeker-table-container">
+            </div>
+        <p class="note" style="color: red; font-weight: bold;">
+            １回目はレア被りの可能性のあるアイテム及び目玉は選択できません<br>
+            目玉と目玉(確定)を区別して入力してください<br>
+            正確に入力しないと正しい結果が得られません<br>
+            目玉(確定)が含まれる場合は16回の結果を入力してください
+        </p>
+        <p class="note">※ゲーム内で出現した順番にアイテムを選択してください。目玉アイテムも選択可能です。</p>
+    </div>
+
+    <div class="controls" style="padding-bottom: 0; margin-bottom: 10px;">
+        <label style="font-weight: normal; display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="stopOnFound" checked style="width: auto;">
+            条件に合致するSEEDが見つかった場合、検索を終了する
+        </label>
+    </div>
+
+
+    <div id="search-buttons-container">
+        <button id="searchButton">全件検索</button>
+        <button id="partialSearchButton">部分検索</button>
+        <button id="clearButton" style="background-color: #6c757d;">選択クリア</button>
+        <button id="stopButton" style="background-color: #dc3545; display: none;">停止</button>
+    </div>
+
+
+    <div class="controls" id="searchRangeControl" style="padding-top: 0; margin-top: -10px;">
+        <div class="input-item">
+            <label for="searchRange">検索SEED数 (部分検索時のみ)</label>
+            <input type="number" id="searchRange" value="10000000">
+        </div>
+    </div>
+   
+    <div class="results-container">
+        <p id="status">結果待機中...</p>
+        <div id="progress-container" style="display: none; margin-top: 10px; margin-bottom: 10px;">
+            <progress id="search-progress" value="0" max="1" style="width: 100%; height: 12px;"></progress>
+            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: #555; margin-top: 4px;">
+                <span id="progress-text"></span>
+                <span id="eta-display"></span>
+            </div>
+        </div>
+        <ul id="results-area"></ul>
+    </div>
+
+
+</div>
+
+
+
+
+<script>
+    // --- マスターデータ (既存のシミュレーターから流用) ---
+    const gachaMaster = {
+        '34': {
+            name: 'ハロウィン',
+            featuredItemRate: 600,
+            rarityRates: { '0': 2000, '1': 5000, '2': 3000, '3': 0, '4': 0 },
+            pool: [0, 2, 3, 4, 5, 10, 11, 12, 14]
+        },
+        '42': {
+            name: '1.1億DL記念',
+            featuredItemRate: 500,
+            rarityRates: { '0': 1000, '1': 5000, '2': 3000, '3': 1000, '4': 0 },
+            pool: [0, 2, 3, 4, 5, 10, 11, 12, 14, 375, 381, 689]
+        }
+    };
+    const itemMaster = {
+        0: { name: "スピダ", rarity: 1 }, 2: { name: "ネコボン", rarity: 2 }, 3: { name: "ニャンピュ", rarity: 1 },
+        4: { name: "おかめ", rarity: 2 }, 5: { name: "スニャ", rarity: 2 }, 10: { name: "5千XP", rarity: 0 },
+        11: { name: "1万XP", rarity: 1 }, 12: { name: "3万XP", rarity: 1 }, 14: { name: "10万XP", rarity: 2 },
+        375: { name: "記念ネコ", rarity: 3 }, 381: { name: "ねこ農家", rarity: 3 }, 689: { name: "石の上にも10年ネコ", rarity: 3 }
+    };
+    const itemNameMap = Object.fromEntries(Object.entries(itemMaster).map(([id, { name }]) => [name, parseInt(id, 10)]));
+    const FULL_32_BIT_SPACE = 4294967295; // 0を除く4,294,967,295個
+
+    // --- 共通関数 ---
+    function xorshift32(seed) {
+        // xorshift32の範囲は1～2^32-1
+        let x = seed; x ^= x << 13; x ^= x >>> 17; x ^= x << 15; return x >>> 0;
+    }
+
+    // --- UIロジック ---
+    function updateUrl() {
+        const params = new URLSearchParams();
+        const gachaId = document.getElementById('gachaIdSelector').value;
+        params.set('gacha', gachaId);
+        const startSeed = document.getElementById('startSeed').value;
+        // SEEDが空欄でない場合のみURLに含める
+        if (startSeed !== '') {
+            params.set('startSeed', startSeed);
+        } else {
+            params.delete('startSeed'); // デフォルト値はURLから削除
+        }
+        const sequence = [];
+        for (let i = 0; i < 16; i++) {
+            const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
+            if (checkedRadio) {
+                const value = checkedRadio.value;
+                if (value === '目玉') sequence.push('f');
+                else if (value === '目玉(確定)') sequence.push('gf');
+                else {
+                    const itemId = itemNameMap[value];
+                    if (itemId !== undefined) sequence.push(itemId);
+                }
+            }
+        }
+        if (sequence.length > 0) params.set('sequence', sequence.join(','));
+        history.replaceState(null, '', `?${params.toString()}`);
+    }
+
+    function formatNumberWithJapaneseUnits(num) {
+        if (!isFinite(num) || num < 0) return 'N/A';
+        if (num < 10000) return num.toLocaleString();
+        const OKU = 100000000;
+        const MAN = 10000;
+        if (num >= OKU) {
+            const okuPart = Math.floor(num / OKU);
+            const manPart = Math.floor((num % OKU) / MAN);
+            let result = `${okuPart}億`;
+            if (manPart > 0) result += `${manPart}万`;
+            return result;
+        }
+        return `${Math.floor(num / MAN)}万`;
+    }
+
+    /**
+     * 長い時間を「〇日〇時間〇分」形式でフォーマットする。
+     * @param {number} ms - ミリ秒
+     * @returns {string} フォーマットされた文字列
+     */
+    function formatLongDuration(ms) {
+        if (!isFinite(ms) || ms <= 0) return '計算不能';
+        let totalSeconds = ms / 1000;
+        const days = Math.floor(totalSeconds / 86400);
+        totalSeconds %= 86400;
+        const hours = Math.floor(totalSeconds / 3600);
+        totalSeconds %= 3600;
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = Math.floor(totalSeconds % 60);
+        const parts = [];
+        if (days > 0) parts.push(`${days}日`);
+        if (hours > 0) parts.push(`${hours}時間`);
+        if (minutes > 0) parts.push(`${minutes}分`);
+        if (parts.length === 0 && seconds > 0) parts.push(`${seconds}秒`);
+        if (parts.length === 0) return "1秒未満";
+        return parts.slice(0, 3).join(''); // 日時分まで表示
+    }
+    
+    /**
+     * 短い時間を「〇分〇秒〇〇」形式（ミリ秒の小数点以下2桁）でフォーマットする。
+     * @param {number} ms - ミリ秒
+     * @returns {string} フォーマットされた文字列
+     */
+    function formatShortDuration(ms) {
+        if (!isFinite(ms) || ms <= 0) return '0秒00';
+        const totalSeconds = ms / 1000;
+        
+        const minutes = Math.floor(totalSeconds / 60);
+        const secondsWithMs = totalSeconds % 60;
+        const seconds = Math.floor(secondsWithMs);
+        // ミリ秒の1/100の位（小数点以下2桁）を計算
+        const fractionalMs = Math.round((secondsWithMs - seconds) * 100);
+
+        let result = '';
+        if (minutes > 0) result += `${minutes}分`;
+        result += `${seconds.toFixed(0)}秒`;
+        result += `${fractionalMs.toFixed(0).padStart(2, '0')}`;
+        
+        return result;
+    }
+
+
+    // --- DOMContentLoaded ---
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- 要素取得 ---
+        const gachaSelector = document.getElementById('gachaIdSelector');
+        const seekerTableContainer = document.getElementById('seeker-table-container');
+        const searchButton = document.getElementById('searchButton'); // 全件検索
+        const partialSearchButton = document.getElementById('partialSearchButton'); // 部分検索
+        const clearButton = document.getElementById('clearButton');
+        const stopButton = document.getElementById('stopButton');
+        const statusEl = document.getElementById('status');
+        const resultsArea = document.getElementById('results-area');
+        const startSeedInput = document.getElementById('startSeed');
+        const startSeedNote = document.getElementById('startSeedNote');
+        const searchRangeInput = document.getElementById('searchRange');
+        const searchRangeControl = document.getElementById('searchRangeControl');
+        const stopOnFoundCheckbox = document.getElementById('stopOnFound');
+        const progressContainer = document.getElementById('progress-container');
+        const progressBar = document.getElementById('search-progress');
+        const progressText = document.getElementById('progress-text');
+        const etaDisplay = document.getElementById('eta-display');
+
+        // --- 探索ロジック変数 ---
+        let activeWorkers = [];
+        let isSearching = false;
+        let foundCount = 0;
+        let isFullSearchMode = false;
+        let finalSearchedSeed = null; // 最終検索SEED
+        let searchEndedByFound = false; // SEED発見による早期終了フラグ
+
+
+        // --- UI初期化 ---
+        for (const id in gachaMaster) {
+            const option = document.createElement('option');
+            option.value = id;
+            option.textContent = gachaMaster[id].name;
+            gachaSelector.appendChild(option);
+        }
+        const populateRadioOptions = () => {
+            const selectedGachaId = gachaSelector.value;
+            const gacha = gachaMaster[selectedGachaId];
+            const sortedItems = gacha.pool.map(id => ({ id, ...itemMaster[id] })).sort((a, b) => a.rarity - b.rarity);
+            let radioOptionsHTML_normal = `<label><input type="radio" name="placeholder" value="目玉"><span class="featuredItem-text">目玉</span></label><label><input type="radio" name="placeholder" value="目玉(確定)"><span class="featuredItem-text">目玉(確定)</span></label>`;
+            sortedItems.forEach(({ name }) => { radioOptionsHTML_normal += `<label><input type="radio" name="placeholder" value="${name}">${name}</label>`; });
+            let radioOptionsHTML_first = '';
+            sortedItems.forEach(({ name, rarity }) => { if (rarity !== 1) radioOptionsHTML_first += `<label><input type="radio" name="placeholder" value="${name}">${name}</label>`; });
+            for (let i = 0; i < 16; i++) {
+                const radioName = `seeker-roll-${i + 1}`;
+                const radioContainer = document.getElementById(`radio-options-${i + 1}`);
+                const htmlToApply = (i === 0) ? radioOptionsHTML_first : radioOptionsHTML_normal;
+                if (radioContainer) {
+                    radioContainer.innerHTML = htmlToApply.replace(/placeholder/g, radioName);
+                    radioContainer.querySelectorAll(`input[name="${radioName}"]`).forEach(radio => {
+                        radio.addEventListener('change', (event) => {
+                            document.getElementById(`seeker-selected-${i + 1}`).textContent = event.target.parentElement.textContent;
+                            event.target.closest('tr').classList.add('selected-row');
+                            updateUrl();
+                        });
+                    });
+                }
+            }
+        };
+        const createSeekerTable = () => {
+            const table = document.createElement('table');
+            table.className = 'seeker-table';
+            table.innerHTML = `<thead><tr><th>回数</th><th>選択アイテム</th><th>候補</th></tr></thead><tbody></tbody>`;
+            const tbody = table.querySelector('tbody');
+            for (let i = 0; i < 16; i++) {
+                const row = document.createElement('tr');
+                row.innerHTML = `<td>${i + 1}回目</td><td id="seeker-selected-${i + 1}">未選択</td><td><div class="radio-options" id="radio-options-${i + 1}"></div></td>`;
+                tbody.appendChild(row);
+            }
+            seekerTableContainer.innerHTML = '';
+            seekerTableContainer.appendChild(table);
+        };
+        createSeekerTable();
+        for (const gachaId in gachaMaster) {
+            const gacha = gachaMaster[gachaId];
+            const rarityItems = { '0': [], '1': [], '2': [], '3': [], '4': [] };
+            gacha.pool.forEach(itemId => { const item = itemMaster[itemId]; if (item) rarityItems[item.rarity].push(itemId); });
+            gacha.rarityItems = rarityItems;
+        }
+
+        // --- 検索実行関数 ---
+        const executeSearch = (isFullSearch) => {
+            if (isSearching) return;
+
+            foundCount = 0;
+            isFullSearchMode = isFullSearch;
+            searchEndedByFound = false; // 検索開始時にフラグをリセット
+            finalSearchedSeed = null;
+
+            const gachaId = gachaSelector.value;
+            const gacha = gachaMaster[gachaId];
+            const stopOnFound = stopOnFoundCheckbox.checked;
+            
+            // 共通の入力チェック
+            const targetSequence = [];
+            for (let i = 0; i < 16; i++) {
+                const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
+                if (checkedRadio) targetSequence.push(checkedRadio.value); else break;
+            }
+            const hasGuaranteedFeatured = targetSequence.includes('目玉(確定)');
+            if (hasGuaranteedFeatured) {
+                if (targetSequence.length !== 16) { alert('目玉(確定)が含まれる場合は、16回のガチャ結果をすべて入力してください。'); return; }
+            } else {
+                if (targetSequence.length < 15) { alert('目玉(確定)が含まれない場合は、15回以上のガチャ結果を入力してください。'); return; }
+            }
+            if (targetSequence.length === 0) {
+                alert('検索を行うには、最低1回分のガチャ結果を入力してください。'); return;
+            }
+
+            // シードの処理
+            let startSeedValue = startSeedInput.value.trim();
+            
+            // 全件検索時のカウンタ順/xorshift32順の判定
+            // SEEDが空("")の場合にカウンタ順 (1, 2, 3...)
+            const isCounterSearch = isFullSearch && startSeedValue === '';
+            
+            let startSeed;
+            if (isCounterSearch) {
+                // カウンタ順の場合、常に1から検索を開始
+                startSeed = 1;
+            } else {
+                // xorshift32順の場合、入力値を32bit unsignedに変換し、0は1に修正
+                startSeed = parseInt(startSeedValue, 10) >>> 0; 
+                if (startSeed === 0) startSeed = 1; 
+            }
+            
+            // 検索範囲の決定
+            const searchRangeValue = parseInt(searchRangeInput.value, 10);
+            if (!isFullSearch && (searchRangeValue <= 0 || !isFinite(searchRangeValue))) {
+                alert('部分検索の検索SEED数には1以上の有効な値を入力してください。'); return;
+            }
+            const totalSearchRange = isFullSearch ? FULL_32_BIT_SPACE : searchRangeValue;
+
+
+            isSearching = true;
+            searchButton.disabled = true;
+            partialSearchButton.disabled = true;
+            searchButton.textContent = isFullSearch ? '全件検索中...' : '全件検索';
+            partialSearchButton.textContent = isFullSearch ? '部分検索' : '部分検索中...';
+            clearButton.classList.add('hidden-control');
+            stopButton.style.display = 'inline-block';
+            
+            // UIの状態変更
+            searchRangeControl.style.display = isFullSearch ? 'none' : 'block';
+            if (isFullSearch) {
+                startSeedNote.textContent = isCounterSearch 
+                    ? 'SEEDが未入力のため、カウンタ順 (1, 2, 3...) に全件（約43億件）を検索します。'
+                    : `SEED: ${startSeed}からxorshift32の順に全件（約43億件）を検索します。`;
+            } else {
+                startSeedNote.textContent = 'このSEEDから開始し、「検索SEED数」の分だけxorshift32の順に検索します。';
+            }
+
+            resultsArea.innerHTML = '';
+            
+            let totalProcessed = 0;
+            let workersFinished = 0;
+            const numWorkers = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, totalSearchRange));
+            
+            statusEl.textContent = `${numWorkers}個のワーカーで${isFullSearch ? '全件検索' : '部分検索'}を開始しました... 検索方式: ${isCounterSearch ? 'カウンタ順' : 'xorshift32順'}`;
+            progressContainer.style.display = 'block';
+            progressBar.value = 0;
+            etaDisplay.textContent = '';
+
+            const startTime = performance.now();
+            const formatETA = (ms) => {
+                if (ms < 0 || !isFinite(ms)) return '??:??';
+                const totalSeconds = Math.round(ms / 1000);
+                const minutes = Math.floor(totalSeconds / 60);
+                const seconds = totalSeconds % 60;
+                return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            };
+
+            // 処理をsetTimeoutで遅延させ、UIの更新を即時反映させる
+            setTimeout(() => {
+                const rangePerWorker = Math.ceil(totalSearchRange / numWorkers);
+
+                for (let i = 0; i < numWorkers; i++) {
+                    const countForWorker = Math.min(rangePerWorker, totalSearchRange - (i * rangePerWorker));
+                    if (countForWorker <= 0) { 
+                        workersFinished++;
+                        continue; 
+                    }
+
+                    const worker = new Worker('seeker_worker.js');
+                    activeWorkers.push(worker);
+
+                    worker.onmessage = (e) => {
+                        const { type, seed, processed, finalSeed } = e.data;
+                        
+                        // 既に SEED が見つかって停止済みの場合、以降のメッセージを無視してワーカーを終了
+                        if (searchEndedByFound) {
+                            worker.terminate();
+                            return;
+                        }
+
+                        if (type === 'found') {
+                            foundCount++;
+                            const li = document.createElement('li');
+                            li.textContent = `SEED発見: ${seed}`;
+                            resultsArea.appendChild(li);
+                        } else if (type === 'progress') {
+                            totalProcessed += processed;
+                            const progress = totalProcessed / totalSearchRange;
+                            progressBar.value = progress;
+                            progressText.textContent = `${formatNumberWithJapaneseUnits(totalProcessed)} / ${formatNumberWithJapaneseUnits(totalSearchRange)} (${(progress * 100).toFixed(2)}%)`;
+                            const elapsedTime = performance.now() - startTime;
+                            if (elapsedTime > 200 && totalProcessed > 0) {
+                                const speed = totalProcessed / elapsedTime;
+                                const etaMs = (totalSearchRange - totalProcessed) / speed;
+                                etaDisplay.textContent = `推定残り時間: ${formatETA(etaMs)}`;
+                            }
+                        } else if (type === 'stop_found') { // SEED発見による即時停止信号
+                            searchEndedByFound = true;
+                            finalSearchedSeed = finalSeed;
+
+                            // progressがまだ反映されていない可能性があるため、強制的に更新
+                            totalProcessed += processed || 0; 
+                            
+                            const duration = performance.now() - startTime;
+                            let finalMessage = `SEED発見により探索を停止: ${formatNumberWithJapaneseUnits(totalProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
+
+                            terminateAllWorkers(); // 全ワーカーを停止
+
+                            let fullMessage = finalMessage + ` 最終検索SEED (発見): ${finalSearchedSeed}`;
+                            fullMessage += '\n\n条件に合致するSEEDを発見したため検索を終了しました。他の候補も検索したい場合は、「条件に合致するSEEDが見つかった場合、検索を終了する」のチェックを外して再度検索を実行してください。';
+                            resetUI(fullMessage);
+                            updateUrl();
+                            return;
+                            
+                        } else if (type === 'done') {
+                            workersFinished++;
+                            // 最終検索SEEDを更新 (発見がなかった場合のために、ワーカーが最後に処理したSEEDを保持)
+                            finalSearchedSeed = finalSeed; 
+                            
+                            // progressがまだ反映されていない可能性があるため、強制的に更新
+                            totalProcessed += processed || 0; 
+
+                            if (workersFinished === numWorkers) {
+                                // 全ワーカーが完了し、かつ早期終了していない場合
+                                const duration = performance.now() - startTime;
+                                
+                                let finalSeedMessage = finalSearchedSeed ? ` 最終検索SEED: ${finalSearchedSeed}` : '';
+                                
+                                let finalMessage = `検索完了: ${formatNumberWithJapaneseUnits(totalProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
+
+                                if (totalProcessed > 0 && duration > 10) {
+                                    const speed = totalProcessed / duration; // SEED/ms
+                                    
+                                    if (!isFullSearch) { 
+                                        const etaTotalMs = FULL_32_BIT_SPACE / speed; 
+                                        finalMessage += `\n(参考: 43億件の全探索には約 ${formatLongDuration(etaTotalMs)} かかる見込みです)`;
+                                    }
+                                }
+                                resetUI(finalMessage + finalSeedMessage);
+                                updateUrl();
+                            }
+                        }
+                    };
+
+                    worker.onerror = (err) => {
+                        console.error('Worker Error:', err);
+                        worker.terminate();
+                        workersFinished++;
+                        if (workersFinished === numWorkers) resetUI('エラーが発生したため探索を中断しました。');
+                    };
+                    
+                    worker.postMessage({
+                        initialStartSeed: startSeed,
+                        workerIndex: i,
+                        rangePerWorker: rangePerWorker,
+                        count: countForWorker, 
+                        gachaId,
+                        targetSequence, 
+                        gachaMasterData: gachaMaster, 
+                        itemMasterData: itemMaster,
+                        isFullSearch: isFullSearch,
+                        isCounterSearch: isCounterSearch,
+                        stopOnFound: stopOnFound
+                    });
+                }
+                if (numWorkers === workersFinished) resetUI('検索範囲が0のため、処理は行われませんでした。');
+            }, 10); // 10msの遅延を入れてUI描画を確実にする
+        };
+
+
+        // --- イベントハンドラ ---
+        gachaSelector.addEventListener('change', () => { populateRadioOptions(); clearButton.click(); updateUrl(); });
+        clearButton.addEventListener('click', () => {
+            for (let i = 0; i < 16; i++) {
+                const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
+                if (checkedRadio) checkedRadio.checked = false;
+                document.getElementById(`seeker-selected-${i + 1}`).textContent = '未選択';
+            }
+            seekerTableContainer.querySelectorAll('.seeker-table tbody tr').forEach(row => row.classList.remove('selected-row'));
+            updateUrl();
+        });
+        startSeedInput.addEventListener('input', updateUrl);
+
+        // 全ワーカーを停止させるヘルパー関数
+        const terminateAllWorkers = () => {
+            activeWorkers.forEach(worker => worker.terminate());
+            activeWorkers = [];
+        };
+
+        const resetUI = (message) => {
+            isSearching = false;
+            searchButton.disabled = false;
+            partialSearchButton.disabled = false;
+            searchButton.textContent = '全件検索';
+            partialSearchButton.textContent = '部分検索';
+            clearButton.classList.remove('hidden-control');
+            stopButton.style.display = 'none';
+            progressContainer.style.display = 'none';
+            searchRangeControl.style.display = 'block';
+            startSeedNote.textContent = '検索を開始するSEEDを入力してください。全件検索時、未入力の場合はカウンタ順に、それ以外はxorshift32の順に全件を検索します。';
+            if (message) statusEl.textContent = message;
+            terminateAllWorkers(); // 停止時にも念のため全ワーカーを終了
+        };
+
+        stopButton.addEventListener('click', () => {
+            if (isSearching) {
+                resetUI('探索を停止しました。');
+            }
+        });
+
+        // 検索ボタンイベントリスナー
+        searchButton.addEventListener('click', () => executeSearch(true)); // 全件検索
+        partialSearchButton.addEventListener('click', () => executeSearch(false)); // 部分検索
+
+        
+        // --- URLからの初期化 ---
+        const params = new URLSearchParams(window.location.search);
+        const urlGachaId = params.get('gacha');
+        const urlStartSeed = params.get('startSeed');
+        const urlSequence = params.get('sequence');
+        if (urlGachaId && gachaMaster[urlGachaId]) gachaSelector.value = urlGachaId; else gachaSelector.value = '42';
+        if (urlStartSeed) startSeedInput.value = urlStartSeed; else startSeedInput.value = '';
+
+        populateRadioOptions();
+        if (urlSequence) {
+            const sequenceIds = urlSequence.split(',');
+            sequenceIds.forEach((idOrSpecial, index) => {
+                let itemName;
+                if (idOrSpecial === 'f') itemName = '目玉';
+                else if (idOrSpecial === 'gf') itemName = '目玉(確定)';
+                else if (itemMaster[idOrSpecial]) itemName = itemMaster[idOrSpecial].name;
+                if (itemName) {
+                    const radio = document.querySelector(`input[name="seeker-roll-${index + 1}"][value="${itemName}"]`);
+                    if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change', { bubbles: true })); }
+                }
+            });
+        }
+        updateUrl();
+    });
+
+</script>
+</body>
+</html>
