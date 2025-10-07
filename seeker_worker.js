@@ -6,14 +6,13 @@ let itemMaster;
 let itemNameMap;
 
 // --- Common functions ---
-// WASMロード失敗時のフォールバックおよび上書き可能にするためのlet定義
-let xorshift32 = function(seed) {
+function xorshift32(seed) {
     let x = seed;
     x ^= x << 13;
     x ^= x >>> 17;
     x ^= x << 15;
     return x >>> 0;
-};
+}
 
 // --- Gacha Simulator with Caching ---
 class GachaSimulator {
@@ -248,28 +247,3 @@ self.onmessage = function(e) {
 
     performSearch(actualStartSeed, count, gachaId, targetSequence, isFullSearch, isCounterSearch, stopOnFound);
 };
-
-
-// --------------------------------------------------------------------------------
-// --- WebAssembly (WASM) のロードとxorshift32の置き換え（高速化のため） ---
-// --------------------------------------------------------------------------------
-try {
-    // gacha_core.js を同期的にロードし、WASMモジュールを初期化
-    importScripts('gacha_core.js'); 
-    
-    // Emscriptenモジュールの初期化
-    const wasmModule = Module(); 
-
-    // cwrapを使って、WASMのC関数をJavaScriptから呼び出せるようにバインド
-    const wasm_xorshift32 = wasmModule.cwrap('xorshift32', 'number', ['number']);
-
-    // 成功した場合、xorshift32関数をWASM版に置き換え、高速化を実現
-    xorshift32 = wasm_xorshift32;
-    
-    // 開発者向けコンソールに成功メッセージを出力
-    console.log('WASM: xorshift32 loaded and activated successfully.');
-
-} catch (e) {
-    // ロードに失敗した場合、xorshift32 は既存のJSフォールバック版のまま継続
-    console.warn('WASM: Failed to load gacha_core.js. Using JavaScript fallback.', e);
-}
