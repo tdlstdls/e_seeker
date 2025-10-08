@@ -546,7 +546,7 @@
                         continue; 
                     }
 
-                    const worker = new Worker('seeker_worker.js');
+                    const worker = new Worker('seeker_worker.js', { type: 'module' });
                     activeWorkers.push(worker);
 
                     worker.onmessage = (e) => {
@@ -623,7 +623,7 @@
                     };
 
                     worker.onerror = (err) => {
-                        console.error('Worker Error:', err);
+                        console.error('Worker Error:', err.message, 'at', err.filename, ':', err.lineno);
                         worker.terminate();
                         workersFinished++;
                         if (workersFinished === numWorkers) resetUI('エラーが発生したため探索を中断しました。');
