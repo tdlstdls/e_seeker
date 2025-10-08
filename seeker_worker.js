@@ -1,110 +1,225 @@
+// seeker_worker.js
 
-// seeker_worker.js - Rewritten for clarity and correct WASM integration.
+// --- Data will be received from the main thread ---
+let gachaMaster;
+let itemMaster;
+let itemNameMap;
 
-let wasmModule = null;
+// --- WASM Integration ---
+let xorshift32_wasm;
+let useWASM = false;
 
-// Immediately load the AssemblyScript loader and wasm module.
 try {
-    importScripts("gacha_core.js"); // Provides the `gacha` promise
+    // 1. gacha_core.js (EmscriptenラッパーとWASMバイナリ) をロード
+    importScripts('gacha_core.js'); 
     
-    // The loader script (gacha_core.js) is expected to create a global promise
-    // named after the entry file ("gacha.ts" -> "gacha").
-    self.gacha.then(module => {
-        wasmModule = module;
-        // Signal to the main thread that the worker is ready.
-        postMessage({ type: 'READY' });
-    }).catch(e => {
-        console.error("WASM Module instantiation failed:", e);
-        postMessage({ type: 'ERROR', message: `WASMモジュールの初期化に失敗しました: ${e}` });
-    });
+    // 2. モジュールを初期化
+    const wasmModule = Module(); 
 
+    // 3. C言語の関数をJSラッパーで包む
+    xorshift32_wasm = wasmModule.cwrap('xorshift32', 'number', ['number']);
+    
+    // 4. WASM使用フラグを立てる
+    useWASM = true;
+    console.log("WASM: xorshift32 loaded and activated successfully.");
+    
 } catch (e) {
-    console.error("Failed to import gacha_core.js:", e);
-    postMessage({ type: 'ERROR', message: `gacha_core.jsの読み込みに失敗しました: ${e}` });
+    // WASMのロードまたは初期化に失敗した場合
+    console.warn(`WASM: Failed to load gacha_core.js. Using JavaScript fallback. ${e}`);
+    useWASM = false;
 }
 
 
-// --- Main message handler ---
-onmessage = (e) => {
-    if (!wasmModule) {
-        postMessage({ type: 'ERROR', message: "WASMモジュールが準備できていません。" });
-        return;
+// --- 共通乱数生成関数 ---
+function xorshift32(seed) {
+    if (useWASM) {
+        // WASMが有効ならWASM関数を呼び出す
+        return xorshift32_wasm(seed);
     }
-    // The main thread sends a single message to start the search.
-    performSearch(e.data);
-};
+    // WASMが無効ならJavaScript版をフォールバックとして使用
+    let x = seed;
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 15;
+    return x >>> 0;
+}
 
+// --- Gacha Simulator with Caching ---
+class GachaSimulator {
+    constructor(startSeed, gacha) {
+        this.startSeed = startSeed;
+        this.gacha = gacha;
+        this.canReRollRarity1 = gacha.rarityItems[1] && gacha.rarityItems[1].length >= 2;
+        
+        // FIFO cache for up to 60 simulation steps
+        this.resultsCache = new Array(60);
+        this.lastCalculatedStep = -1;
+    }
 
-// --- Data marshalling functions to interact with WASM ---
+    getStep(k) {
+        if (k < 0) return { endSeed: this.startSeed, lastItemId: -1 };
+        if (this.lastCalculatedStep >= k && this.resultsCache[k]) {
+            return this.resultsCache[k];
+        }
 
-function asFree(ptr) {
-    if (wasmModule && wasmModule.exports.__unpin) {
-        wasmModule.exports.__unpin(ptr);
+        // Calculate steps from the last known point
+        for (let i = this.lastCalculatedStep + 1; i <= k; i++) {
+            const prevState = (i === 0) ? { endSeed: this.startSeed, lastItemId: -1 } : this.resultsCache[i - 1];
+            this.resultsCache[i] = this.advanceOneStep(prevState.endSeed, prevState.lastItemId);
+        }
+        
+        this.lastCalculatedStep = k;
+        return this.resultsCache[k];
+    }
+
+    advanceOneStep(currentSeed, lastItemId) {
+        const s1 = xorshift32(currentSeed);
+        const isFeaturedDraw = (s1 % 10000) < this.gacha.featuredItemRate;
+
+        if (isFeaturedDraw) {
+            return {
+                rarityId: -1, // No rarity for featured
+                drawnItemId: -1, // No specific item for featured
+                isFeatured: true,
+                endSeed: s1,
+                lastItemId: -1 // Reset re-roll chain
+            };
+        }
+
+        const s2 = xorshift32(s1);
+        const rarityVal = s2 % 10000;
+        
+        // --- OPTIMIZED RARITY LOOKUP ---
+        let rarityId = 0;
+        const cumulativeRates = this.gacha.cumulativeRarityRates;
+        for (let i = 0; i < cumulativeRates.length; i++) {
+            if (rarityVal < cumulativeRates[i]) {
+                rarityId = i;
+                break;
+            }
+        }
+        // --- END OPTIMIZATION ---
+
+        const s3 = xorshift32(s2);
+        const itemPool = this.gacha.rarityItems[rarityId];
+        if (!itemPool || itemPool.length === 0) {
+            return { rarityId, drawnItemId: -2, isFeatured: false, endSeed: s3, lastItemId }; // -2 for error
+        }
+        let drawnItemId = itemPool[s3 % itemPool.length];
+
+        const isReRoll = this.canReRollRarity1 && rarityId === 1 && lastItemId === drawnItemId;
+
+        if (isReRoll) {
+            const s4 = xorshift32(s3);
+            const reRollPool = itemPool.filter(id => id !== drawnItemId);
+            if (reRollPool.length === 0) {
+                return { rarityId, drawnItemId: -2, isFeatured: false, endSeed: s4, lastItemId };
+            }
+            drawnItemId = reRollPool[s4 % reRollPool.length];
+            return { rarityId, drawnItemId, isFeatured: false, endSeed: s4, lastItemId: drawnItemId };
+        } else {
+            return { rarityId, drawnItemId, isFeatured: false, endSeed: s3, lastItemId: drawnItemId };
+        }
     }
 }
 
-function copyArrayToWASM(sourceArray) {
-    if (!wasmModule) return 0;
-    const { __new, memory } = wasmModule.exports;
-    
-    const byteLength = sourceArray.byteLength;
-    const ptr = __new(byteLength, 1); // ID=1 for ArrayBuffer
-    
-    const wasmByteView = new Uint8Array(memory.buffer, ptr, byteLength);
-    wasmByteView.set(new Uint8Array(sourceArray.buffer));
-    
-    return ptr;
+
+// --- Main search logic ---
+function performSearch(startSeed, count, gachaId, targetSequence, isFullSearch, isCounterSearch, stopOnFound) {
+    const gacha = gachaMaster[gachaId];
+    if (!gacha) return;
+
+    const progressUpdateInterval = 10000;
+    let currentSeedToTest = startSeed;
+    let processedCount = 0;
+    const initialSeed = startSeed; // xorshift32順のループ検出用
+
+    for (let i = 0; i < count; i++) {
+        
+        if (currentSeedToTest === 0) {
+            // シードが0になったら強制停止（xorshift32は0を受け取ると0を返すため、シード0は不可）
+            break;
+        }
+        
+        // xorshift32順（部分検索およびSEED指定全件検索時）の場合の周期完了チェック
+        if (!isCounterSearch && processedCount > 0 && currentSeedToTest === initialSeed) {
+            break;
+        }
+        
+        // カウンタ順（全件検索時）の場合の終了チェック
+        // currentSeedToTestが4294967296 (0) になったら終了（4294967295の次が0）
+        if (isCounterSearch && currentSeedToTest > 4294967295) { 
+            break;
+        }
+
+        processedCount++;
+
+        const simulator = new GachaSimulator(currentSeedToTest, gacha);
+
+        // --- Full Sequence Check ---
+        let fullSequenceMatched = true;
+        for (let k = 0; k < targetSequence.length; k++) {
+            const targetItemName = targetSequence[k];
+            const stepResult = simulator.getStep(k);
+
+            let currentStepMatched = false;
+            if (targetItemName === '目玉(確定)') {
+                currentStepMatched = true;
+            } else if (targetItemName === '目玉') {
+                currentStepMatched = stepResult.isFeatured;
+            } else {
+                const targetItemId = itemNameMap[targetItemName];
+                currentStepMatched = !stepResult.isFeatured && stepResult.drawnItemId === targetItemId;
+            }
+
+            if (!currentStepMatched) {
+                fullSequenceMatched = false;
+                break;
+            }
+        }
+
+        if (fullSequenceMatched) {
+            // SEED発見
+            postMessage({ type: 'found', seed: currentSeedToTest });
+
+            if (stopOnFound) {
+                // 停止する場合
+                const processedSinceLastUpdate = processedCount % progressUpdateInterval;
+                if (processedSinceLastUpdate > 0) {
+                     postMessage({ type: 'progress', processed: processedSinceLastUpdate });
+                }
+                postMessage({ type: 'stop_found', finalSeed: currentSeedToTest, processed: processedSinceLastUpdate });
+                return; // ワーカーを即時終了
+            }
+        }
+
+        if (processedCount % progressUpdateInterval === 0) {
+            postMessage({ type: 'progress', processed: progressUpdateInterval });
+        }
+        
+        // 次のSEEDへの遷移ロジック
+        if (isCounterSearch) {
+            // カウンタ順: 1ずつ増加 (32bit unsignedでオーバーフローをシミュレート)
+            currentSeedToTest = (currentSeedToTest + 1) >>> 0;
+            // 0になった場合、次のループでbreakする
+            if (currentSeedToTest === 0) currentSeedToTest = 4294967296; // 終了フラグとして使用
+        } else {
+            // xorshift32順
+            currentSeedToTest = xorshift32(currentSeedToTest);
+        }
+    }
+
+    // ループが最後まで完了した場合 (SEEDが見つからなかった場合)
+    const remainingProgress = processedCount % progressUpdateInterval;
+    if (remainingProgress > 0) {
+        postMessage({ type: 'progress', processed: remainingProgress });
+    }
+    // 最後に処理したSEEDを finalSeed として報告
+    postMessage({ type: 'done', finalSeed: currentSeedToTest });
 }
 
-function setupASData(gacha, targetSequence, itemMaster) {
-    const itemNameMap = Object.fromEntries(Object.entries(itemMaster).map(([id, { name }]) => [name, parseInt(id, 10)]));
-    const SEQUENCE_MAX_LENGTH = 16;
 
-    // 1. Gacha Master Data
-    const GACHA_DATA_LENGTH = 12;
-    const gachaData = new Uint32Array(GACHA_DATA_LENGTH);
-    const cumulativeRates = gacha.cumulativeRarityRates;
-    
-    gachaData[0] = gacha.featuredItemRate || 0;
-    for (let i = 0; i < 5; i++) {
-        gachaData[1 + i] = gacha.rarityRates[i.toString()] || 0;
-        gachaData[6 + i] = cumulativeRates[i] || 0;
-    }
-    gachaData[11] = gacha.canReroll === '1' ? 1 : 0;
-    const gachaDataPtr = copyArrayToWASM(gachaData);
-
-    // 2. Target Sequence
-    const sequenceIds = targetSequence.slice(0, SEQUENCE_MAX_LENGTH).map(name => {
-        if (name === '目玉(確定)') return 4294967295; // GUARANTEED_FEATURED_ID
-        if (name === '目玉') return 4294967294;     // FEATURED_ID
-        return itemNameMap[name] || 0;
-    });
-    const targetSequenceArray = new Uint32Array(sequenceIds);
-    const targetSequencePtr = copyArrayToWASM(targetSequenceArray);
-    
-    // 3. Pool Data
-    const poolDataItems = [];
-    for (let i = 0; i <= 4; i++) {
-        const items = gacha.rarityItems[i.toString()] || [];
-        poolDataItems.push(items.length);
-        poolDataItems.push(...items);
-    }
-    const poolDataArray = new Uint32Array(poolDataItems);
-    const poolDataPtr = copyArrayToWASM(poolDataArray);
-    
-    return { 
-        gachaDataPtr, 
-        poolDataPtr, 
-        targetSequencePtr, 
-        targetSequenceLength: targetSequenceArray.length,
-        pointersToFree: [gachaDataPtr, poolDataPtr, targetSequencePtr]
-    };
-}
-
-
-// --- Core search logic ---
-
-function performSearch(config) {
+self.onmessage = function(e) {
     const {
         initialStartSeed,
         workerIndex,
@@ -114,121 +229,51 @@ function performSearch(config) {
         targetSequence,
         gachaMasterData,
         itemMasterData,
+        isFullSearch,
         isCounterSearch,
         stopOnFound
-    } = config;
+    } = e.data;
 
-    const gacha = gachaMasterData[gachaId];
+    // Set up master data for this worker instance
+    gachaMaster = gachaMasterData;
+    itemMaster = itemMasterData;
+    itemNameMap = Object.fromEntries(Object.entries(itemMaster).map(([id, { name }]) => [name, parseInt(id, 10)]));
+    
+    // Pre-process gacha data
+    for (const id in gachaMaster) {
+        const gacha = gachaMaster[id];
 
-    // Pre-process gacha data for JS logic (cumulative rates, etc.)
-    for (const id in gachaMasterData) {
-        const currentGacha = gachaMasterData[id];
-        if (currentGacha.rarityRates && !currentGacha.cumulativeRarityRates) {
+        // Pre-calculate cumulative rarity rates
+        if (gacha.rarityRates && !gacha.cumulativeRarityRates) {
             let cumulativeRate = 0;
             const cumulativeArray = [];
+            // Assuming rarities are '0', '1', '2', '3', '4' in order
             for (let i = 0; i <= 4; i++) {
-                cumulativeRate += currentGacha.rarityRates[i.toString()] || 0;
+                cumulativeRate += gacha.rarityRates[i.toString()] || 0;
                 cumulativeArray.push(cumulativeRate);
             }
-            currentGacha.cumulativeRarityRates = cumulativeArray;
+            gacha.cumulativeRarityRates = cumulativeArray;
         }
-        if (!currentGacha.rarityItems) {
+
+        if (!gacha.rarityItems) {
             const rarityItems = { '0': [], '1': [], '2': [], '3': [], '4': [] };
-            currentGacha.pool.forEach(itemId => {
-                const item = itemMasterData[itemId];
+            gacha.pool.forEach(itemId => {
+                const item = itemMaster[itemId];
                 if (item) rarityItems[item.rarity].push(itemId);
             });
-            currentGacha.rarityItems = rarityItems;
+            gacha.rarityItems = rarityItems;
         }
     }
-    
-    const { performASSearch, memory } = wasmModule.exports;
-    let dataPointers = null;
-    let finalSeedForWorker = initialStartSeed;
 
-    try {
-        dataPointers = setupASData(gacha, targetSequence, itemMasterData);
-
-        const BATCH_SIZE = 100000; // Process in batches to send progress updates
-        const FOUND_SEEDS_BUFFER_PTR = 4 * 1024; // Must match AS
-        const MAX_FOUND_SEEDS_PER_BATCH = 100;   // Must be reasonable
-
-        let totalProcessed = 0;
-        let currentSeed = initialStartSeed;
-
-        // In xorshift mode, we need to advance the seed to the worker's starting point
-        if (!isCounterSearch) {
-            const offset = workerIndex * rangePerWorker;
-            for (let i = 0; i < offset; i++) {
-                currentSeed = wasmModule.exports.xorshift32(currentSeed);
-            }
-        } else {
-            // In counter mode, the starting seed is a simple offset
-            currentSeed += (workerIndex * rangePerWorker);
+    let actualStartSeed = initialStartSeed;
+    if (isCounterSearch) {
+        actualStartSeed = (initialStartSeed + (workerIndex * rangePerWorker)) >>> 0;
+    } else {
+        const offset = workerIndex * rangePerWorker;
+        for (let i = 0; i < offset; i++) {
+            actualStartSeed = xorshift32(actualStartSeed);
         }
-        
-        finalSeedForWorker = currentSeed;
-
-        while (totalProcessed < count) {
-            const remaining = count - totalProcessed;
-            const currentBatchSize = Math.min(remaining, BATCH_SIZE);
-
-            const foundCount = performASSearch(
-                currentSeed,
-                currentBatchSize,
-                dataPointers.gachaDataPtr,
-                dataPointers.poolDataPtr,
-                dataPointers.targetSequencePtr,
-                dataPointers.targetSequenceLength,
-                isCounterSearch ? 1 : 0,
-                FOUND_SEEDS_BUFFER_PTR,
-                MAX_FOUND_SEEDS_PER_BATCH
-            );
-
-            if (foundCount > 0) {
-                const resultView = new Uint32Array(memory.buffer, FOUND_SEEDS_BUFFER_PTR, foundCount);
-                for (let i = 0; i < foundCount; i++) {
-                    const foundSeed = resultView[i];
-                    postMessage({ type: 'found', seed: foundSeed });
-
-                    if (stopOnFound) {
-                        // Calculate the final seed at the point of stopping
-                        let finalSeed = foundSeed;
-                        if (isCounterSearch) {
-                            // This isn't perfect but gives a close approximation
-                            const seedsProcessedInBatch = (i + 1);
-                            finalSeed = currentSeed + seedsProcessedInBatch;
-                        }
-                        postMessage({ type: 'stop_found', processed: totalProcessed + i + 1, finalSeed: finalSeed });
-                        return; // Terminate search for this worker
-                    }
-                }
-            }
-
-            // Advance seed for the next batch
-            if (isCounterSearch) {
-                currentSeed += currentBatchSize;
-            } else {
-                // In xorshift, we need to calculate the start of the next batch
-                for (let i = 0; i < currentBatchSize; i++) {
-                    currentSeed = wasmModule.exports.xorshift32(currentSeed);
-                }
-            }
-            
-            totalProcessed += currentBatchSize;
-            finalSeedForWorker = currentSeed;
-
-            postMessage({ type: 'progress', processed: currentBatchSize });
-        }
-
-    } catch (e) {
-        console.error("Error during WASM search:", e);
-        postMessage({ type: 'ERROR', message: `WASM実行中にエラーが発生: ${e}` });
-    } finally {
-        if (dataPointers) {
-            dataPointers.pointersToFree.forEach(asFree);
-        }
-        // Signal that this worker is done
-        postMessage({ type: 'done', processed: count, finalSeed: finalSeedForWorker });
     }
-}
+
+    performSearch(actualStartSeed, count, gachaId, targetSequence, isFullSearch, isCounterSearch, stopOnFound);
+};
