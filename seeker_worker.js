@@ -5,38 +5,8 @@ let gachaMaster;
 let itemMaster;
 let itemNameMap;
 
-// --- WASM Integration ---
-let xorshift32_wasm;
-let useWASM = false;
-
-try {
-    // 1. gacha_core.js (EmscriptenラッパーとWASMバイナリ) をロード
-    importScripts('gacha_core.js'); 
-    
-    // 2. モジュールを初期化
-    const wasmModule = Module(); 
-
-    // 3. C言語の関数をJSラッパーで包む
-    xorshift32_wasm = wasmModule.cwrap('xorshift32', 'number', ['number']);
-    
-    // 4. WASM使用フラグを立てる
-    useWASM = true;
-    console.log("WASM: xorshift32 loaded and activated successfully.");
-    
-} catch (e) {
-    // WASMのロードまたは初期化に失敗した場合
-    console.warn(`WASM: Failed to load gacha_core.js. Using JavaScript fallback. ${e}`);
-    useWASM = false;
-}
-
-
-// --- 共通乱数生成関数 ---
+// --- Common functions ---
 function xorshift32(seed) {
-    if (useWASM) {
-        // WASMが有効ならWASM関数を呼び出す
-        return xorshift32_wasm(seed);
-    }
-    // WASMが無効ならJavaScript版をフォールバックとして使用
     let x = seed;
     x ^= x << 13;
     x ^= x >>> 17;
@@ -52,7 +22,7 @@ class GachaSimulator {
         this.canReRollRarity1 = gacha.rarityItems[1] && gacha.rarityItems[1].length >= 2;
         
         // FIFO cache for up to 60 simulation steps
-        this.resultsCache = new Array(60);
+        this.resultsCache = new Array(60); 
         this.lastCalculatedStep = -1;
     }
 
@@ -160,11 +130,11 @@ function performSearch(startSeed, count, gachaId, targetSequence, isFullSearch, 
         let fullSequenceMatched = true;
         for (let k = 0; k < targetSequence.length; k++) {
             const targetItemName = targetSequence[k];
-            const stepResult = simulator.getStep(k);
+            const stepResult = simulator.getStep(k); 
 
             let currentStepMatched = false;
             if (targetItemName === '目玉(確定)') {
-                currentStepMatched = true;
+                currentStepMatched = true; 
             } else if (targetItemName === '目玉') {
                 currentStepMatched = stepResult.isFeatured;
             } else {
@@ -188,7 +158,7 @@ function performSearch(startSeed, count, gachaId, targetSequence, isFullSearch, 
                 if (processedSinceLastUpdate > 0) {
                      postMessage({ type: 'progress', processed: processedSinceLastUpdate });
                 }
-                postMessage({ type: 'stop_found', finalSeed: currentSeedToTest, processed: processedSinceLastUpdate });
+                postMessage({ type: 'stop_found', finalSeed: currentSeedToTest, processed: processedSinceLastUpdate }); 
                 return; // ワーカーを即時終了
             }
         }
@@ -215,7 +185,7 @@ function performSearch(startSeed, count, gachaId, targetSequence, isFullSearch, 
         postMessage({ type: 'progress', processed: remainingProgress });
     }
     // 最後に処理したSEEDを finalSeed として報告
-    postMessage({ type: 'done', finalSeed: currentSeedToTest });
+    postMessage({ type: 'done', finalSeed: currentSeedToTest }); 
 }
 
 
@@ -229,7 +199,7 @@ self.onmessage = function(e) {
         targetSequence,
         gachaMasterData,
         itemMasterData,
-        isFullSearch,
+        isFullSearch, 
         isCounterSearch,
         stopOnFound
     } = e.data;
