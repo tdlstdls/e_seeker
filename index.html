@@ -313,8 +313,10 @@
                 const selectElement = document.getElementById(`item-selector-${i + 1}`);
                 if (selectElement) value = selectElement.value;
             } else { // radio (INPUT_METHOD_RADIO)
+                // ラジオボタンの選択値を取得 (未選択の場合はnull)
                 const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
-                if (checkedRadio) value = checkedRadio.value;
+                // ラジオボタンでは、未選択の状態を空文字で表現する
+                value = checkedRadio ? checkedRadio.value : ''; 
             }
 
             if (value !== 'placeholder' && value !== '') {
@@ -326,7 +328,7 @@
                     else sequence.push(value);
                 }
             } else {
-                break;
+                break; // 未選択/placeholder/空文字の場合はシーケンスの入力終了とみなす
             }
         }
         
@@ -418,14 +420,14 @@
 
             // 全ての選択肢を生成 (HTML文字列)
             const baseOptions = [
-                { value: 'placeholder', name: '--- 未選択 ---' },
+                { value: 'placeholder', name: '--- 未選択 ---' }, // プルダウン用
                 { value: '目玉', name: '目玉' },
                 { value: '目玉(確定)', name: '目玉(確定)' },
                 ...sortedItems.map(({ name }) => ({ value: name, name: name }))
             ];
             // 1回目用の選択肢を生成 (レアリティ1(レア被り)と目玉は選択不可)
             const firstRollOptions = [
-                { value: 'placeholder', name: '--- 未選択 ---' },
+                { value: 'placeholder', name: '--- 未選択 ---' }, // プルダウン用
                 { value: '目玉(確定)', name: '目玉(確定)' },
                 ...sortedItems.filter(({ rarity }) => rarity !== 1).map(({ name }) => ({ value: name, name: name }))
             ];
@@ -434,13 +436,20 @@
                 const optionsToUse = (i === 0) ? firstRollOptions : baseOptions;
                 const rollNum = i + 1;
                 
+                // ラジオボタンの選択肢に「--- 未選択 ---」を先頭に追加
+                const radioInitialOption = { value: '', name: '--- 未選択 ---' }; 
+                const radioOptionsToUse = (i === 0) 
+                    ? [radioInitialOption, ...firstRollOptions.filter(opt => opt.value !== 'placeholder' && opt.value !== '目玉')] 
+                    : [radioInitialOption, ...baseOptions.filter(opt => opt.value !== 'placeholder')];
+
+
                 if (inputMethod === INPUT_METHOD_SELECT) {
                     const selectElement = document.getElementById(`item-selector-${rollNum}`);
                     if (selectElement) {
                         let html = '';
                         optionsToUse.forEach(opt => {
-                            // placeholder以外の場合、1回目なら目玉を除外
-                            if (rollNum === 1 && opt.value === '目玉' && opt.value !== '目玉(確定)') return; 
+                            // 1回目なら目玉を除外
+                            if (rollNum === 1 && opt.value === '目玉') return; 
                             html += `<option value="${opt.value}">${opt.name}</option>`;
                         });
                         selectElement.innerHTML = html;
@@ -454,16 +463,20 @@
                     const radioDiv = document.getElementById(`radio-container-${rollNum}`);
                     if (radioDiv) {
                         let html = '';
-                        optionsToUse.forEach(opt => {
-                            // placeholderはラジオボタンには不要
-                            if (opt.value === 'placeholder') return;
+                        // radioOptionsToUse を使用
+                        radioOptionsToUse.forEach(opt => {
                             const isChecked = radioDiv.getAttribute('data-stored-value') === opt.value ? 'checked' : '';
                             const isDisabled = (rollNum === 1 && opt.value === '目玉'); // 1回目は目玉不可
                             const disabledAttr = isDisabled ? 'disabled' : '';
 
+                            const inputName = `seeker-roll-${rollNum}`;
+                            
+                            const isPlaceholderOption = opt.value === ''; 
+                            const isInitialState = isPlaceholderOption && !radioDiv.getAttribute('data-stored-value');
+                            
                             html += `
                                 <label>
-                                    <input type="radio" name="seeker-roll-${rollNum}" value="${opt.value}" ${isChecked} ${disabledAttr}>
+                                    <input type="radio" name="${inputName}" value="${opt.value}" ${isChecked || isInitialState ? 'checked' : ''} ${disabledAttr}>
                                     ${opt.name}
                                 </label>
                             `;
@@ -473,14 +486,26 @@
                         // ラジオボタンの変更イベントを設定
                         radioDiv.querySelectorAll(`input[name="seeker-roll-${rollNum}"]`).forEach(radio => {
                             radio.addEventListener('change', (event) => {
-                                event.target.closest('tr').classList.add('selected-row');
+                                // ★修正箇所: 未選択 (value='') であればselected-rowを解除
+                                const isSelected = event.target.value !== '';
+                                event.target.closest('tr').classList.toggle('selected-row', isSelected);
                                 radioDiv.setAttribute('data-stored-value', event.target.value); // 値を保存
                                 updateUrl();
                             });
                         });
 
                         // 選択状態のUIを反映
-                        radioDiv.closest('tr').classList.toggle('selected-row', !!radioDiv.getAttribute('data-stored-value'));
+                        // ★修正箇所: 値が空文字でない場合にハイライト
+                        const storedValue = radioDiv.getAttribute('data-stored-value');
+                        const isSelected = storedValue !== '' && storedValue !== null;
+                        radioDiv.closest('tr').classList.toggle('selected-row', isSelected);
+                        
+                        // 初回ロード時に未選択の場合は、value=''のラジオボタンをcheckedにする
+                        if (!storedValue) {
+                             const unselectedRadio = document.querySelector(`input[name="seeker-roll-${rollNum}"][value=""]`);
+                             if (unselectedRadio) unselectedRadio.checked = true;
+                        }
+
                     }
                 }
             }
@@ -556,8 +581,9 @@
                     }
                 } else { // radio
                     const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
+                    // ラジオボタンのvalueを取得 (未選択の場合は空文字)
                     if (checkedRadio) {
-                        value = checkedRadio.value;
+                        value = checkedRadio.value; 
                     }
                 }
                 
@@ -571,10 +597,10 @@
             // 以降のロジックは変更なし
             const hasGuaranteedFeatured = targetSequenceNames.includes('目玉(確定)');
             if (hasGuaranteedFeatured) {
-                if (targetSequenceNames.length !== 16) { alert('目玉(確定)が含まれる場合は、16回のガチャ結果をすべて入力してください。'); return; }
+                if (targetSequenceNames.length < 8) { alert('目玉(確定)が含まれる場合は、最低8回分のガチャ結果を入力してください。'); return; }
             } else {
-                if (targetSequenceNames.length < 1) { 
-                    alert('検索を行うには、最低1回分のガチャ結果を入力してください。'); return;
+                if (targetSequenceNames.length < 7) { 
+                    alert('検索を行うには、最低7回分のガチャ結果を入力してください。'); return;
                 }
             }
             
@@ -804,11 +830,14 @@
                     }
                 } else { // radio
                     const radioDiv = document.getElementById(`radio-container-${rollNum}`);
-                    const checkedRadio = document.querySelector(`input[name="seeker-roll-${rollNum}"]:checked`);
-                    if (checkedRadio) checkedRadio.checked = false;
+                    // ★修正箇所: 未選択（value=""）のラジオボタンを選択状態にする
+                    const unselectedRadio = document.querySelector(`input[name="seeker-roll-${rollNum}"][value=""]`);
+                    if (unselectedRadio) unselectedRadio.checked = true;
+
                     if (radioDiv) {
+                        // ★修正箇所: 未選択なのでハイライトを解除
                         radioDiv.closest('tr').classList.remove('selected-row');
-                        radioDiv.setAttribute('data-stored-value', '');
+                        radioDiv.setAttribute('data-stored-value', ''); // 保存値をクリア
                     }
                 }
             }
