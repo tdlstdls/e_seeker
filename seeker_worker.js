@@ -70,10 +70,12 @@ function performSearch_js(startSeed, count, gacha, targetSequence, isCounterSear
     // 【修正】targetSequenceはID(数値)または特殊コード(-1, -2)で渡されるため、itemNameMapはここでは不要
     
     for (let i = 0; i < count; i++) {
-        if (currentSeedToTest === 0) break;
-        if (!isCounterSearch && processedCount > 0 && currentSeedToTest === initialSeed) break;
+        // カウンタ検索の場合は43億を超えたら終了
         if (isCounterSearch && currentSeedToTest > 4294967295) break; 
         
+        // xorshift32検索の場合は一周したら終了
+        if (!isCounterSearch && processedCount > 0 && currentSeedToTest === initialSeed) break;
+
         processedCount++;
 
         let fullSequenceMatched = true;
@@ -107,7 +109,8 @@ function performSearch_js(startSeed, count, gacha, targetSequence, isCounterSear
             if (stopOnFound) {
                 const processedSinceLastUpdate = processedCount % 100000;
                 if (processedSinceLastUpdate > 0) postMessage({ type: 'progress', processed: processedSinceLastUpdate });
-                postMessage({ type: 'stop_found', finalSeed: currentSeedToTest, processed: 0 }); 
+                // finalSeedは不要
+                postMessage({ type: 'stop_found', processed: processedCount }); 
                 return;
             }
         }
@@ -117,7 +120,7 @@ function performSearch_js(startSeed, count, gacha, targetSequence, isCounterSear
         
         if (isCounterSearch) {
             currentSeedToTest = (currentSeedToTest + 1) >>> 0; 
-            if (currentSeedToTest === 0) currentSeedToTest = 4294967296; 
+            if (currentSeedToTest === 0) currentSeedToTest = 4294967296; // 43億の次のシードを表現
         } else {
             currentSeedToTest = xorshift32_js(currentSeedToTest);
         }
@@ -126,10 +129,12 @@ function performSearch_js(startSeed, count, gacha, targetSequence, isCounterSear
     const remainingProgress = processedCount % 100000;
     if (remainingProgress > 0) postMessage({ type: 'progress', processed: remainingProgress });
     
+    // nextJobがある場合は、カウンタ検索に移行
     if (nextJob) {
         performSearch_js(nextJob.initialStartSeed, nextJob.count, gacha, nextJob.targetSequence, nextJob.isCounterSearch, stopOnFound, null);
     } else {
-        postMessage({ type: 'done', finalSeed: currentSeedToTest, processed: 0 });
+        // finalSeedは不要
+        postMessage({ type: 'done', processed: processedCount });
     }
 }
 
@@ -145,13 +150,12 @@ self.onmessage = async function(e) {
     
     const {
         initialStartSeed, workerIndex, rangePerWorker, count, gachaId,
-        targetSequence, gachaData, isCounterSearch, stopOnFound, nextJob // 【修正】gachaDataを受け取る
+        targetSequence, gachaData, isCounterSearch, stopOnFound, nextJob 
     } = e.data;
 
     // --- データ初期化（全てのジョブで共通） ---
-    // 【修正】メインスレッドから渡された事前計算済みデータを使用
+    // メインスレッドから渡された事前計算済みデータを使用
     gachaMaster = { [gachaId]: gachaData }; // gachaMaster[gachaId]で参照できるようにラップ
-    // itemMaster, itemNameMap の再計算は不要 (targetSequenceは数値コードで渡されるため)
     // ----------------------------------------
     
     let actualStartSeed = initialStartSeed;

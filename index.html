@@ -179,7 +179,7 @@
         <div id="seeker-table-container">
         </div>
         <p class="note" style="color: red; font-weight: bold;">
-            １回目はレア被りの可能性のあるアイテム及び目玉は選択できません<br>
+            １回目はレア被りの可能性のあるアイテム及び目玉、目玉(確定)は選択できません<br>
             目玉と目玉(確定)を区別して入力してください<br>
             正確に入力しないと正しい結果が得られません<br>
             目玉(確定)が含まれる場合は16回の結果を入力してください
@@ -206,8 +206,7 @@
     <div class="controls" id="searchRangeControl" style="padding-top: 0; margin-top: -10px;">
         <div class="input-item">
             <label for="searchRange">検索SEED数 (部分検索時のみ)</label>
-            <input type="number" id="searchRange" value="10000000">
-        </div>
+            <input type="number" id="searchRange" value="100000000"> </div>
     </div>
    
     <div class="results-container">
@@ -220,6 +219,9 @@
             </div>
         </div>
         <ul id="results-area"></ul>
+        <p id="found-limit-message" style="display: none; font-size: 0.9rem; color: #dc3545; font-weight: bold; margin-top: 10px;">
+            ※発見SEEDの表示は、処理速度確保のため最初の20件までに制限されています。
+        </p>
     </div>
 
 </div>
@@ -278,7 +280,7 @@
         let x = seed; x ^= x << 13; x ^= x >>> 17; x ^= x << 15; return x >>> 0;
     }
 
-    // 【修正】クエリパラメーターの数値コードに合わせて修正
+    // クエリパラメーターの数値コードに合わせて修正
     function getCurrentInputMethod() {
         const selectedMethod = document.querySelector('input[name="input_method_radio"]:checked').value;
         return selectedMethod; // '0' or '1'
@@ -391,15 +393,18 @@
         const progressText = document.getElementById('progress-text');
         const etaDisplay = document.getElementById('eta-display');
         const inputMethodRadios = document.querySelectorAll('input[name="input_method_radio"]');
+        const foundLimitMessage = document.getElementById('found-limit-message');
 
 
         // --- 探索ロジック変数 ---
         let activeWorkers = [];
         let isSearching = false;
         let foundCount = 0;
+        let foundSeeds = new Set(); // ★修正箇所: 重複チェックのためのSetを導入
         let isFullSearchMode = false;
         let finalSearchedSeed = null;
         let searchEndedByFound = false;
+        const MAX_DISPLAY_COUNT = 20; // 制限数
         const PRE_SEARCH_COUNT = 10000;
         const FEAT_CODE = -1; // '目玉'
         const G_FEAT_CODE = -2; // '目玉(確定)'
@@ -425,10 +430,11 @@
                 { value: '目玉(確定)', name: '目玉(確定)' },
                 ...sortedItems.map(({ name }) => ({ value: name, name: name }))
             ];
-            // 1回目用の選択肢を生成 (レアリティ1(レア被り)と目玉は選択不可)
+            
+            // 1回目用の選択肢を生成 (レアリティ1(レア被り)と目玉、目玉(確定)は選択不可)
             const firstRollOptions = [
                 { value: 'placeholder', name: '--- 未選択 ---' }, // プルダウン用
-                { value: '目玉(確定)', name: '目玉(確定)' },
+                // 目玉(確定)を削除
                 ...sortedItems.filter(({ rarity }) => rarity !== 1).map(({ name }) => ({ value: name, name: name }))
             ];
             
@@ -438,8 +444,10 @@
                 
                 // ラジオボタンの選択肢に「--- 未選択 ---」を先頭に追加
                 const radioInitialOption = { value: '', name: '--- 未選択 ---' }; 
+                
+                // 1回目 (i === 0) のラジオボタンから目玉(確定)も除外
                 const radioOptionsToUse = (i === 0) 
-                    ? [radioInitialOption, ...firstRollOptions.filter(opt => opt.value !== 'placeholder' && opt.value !== '目玉')] 
+                    ? [radioInitialOption, ...firstRollOptions.filter(opt => opt.value !== 'placeholder' && opt.value !== '目玉' && opt.value !== '目玉(確定)')] 
                     : [radioInitialOption, ...baseOptions.filter(opt => opt.value !== 'placeholder')];
 
 
@@ -448,7 +456,7 @@
                     if (selectElement) {
                         let html = '';
                         optionsToUse.forEach(opt => {
-                            // 1回目なら目玉を除外
+                            // 1回目なら目玉を除外 (firstRollOptionsには既に目玉(確定)がない)
                             if (rollNum === 1 && opt.value === '目玉') return; 
                             html += `<option value="${opt.value}">${opt.name}</option>`;
                         });
@@ -466,7 +474,7 @@
                         // radioOptionsToUse を使用
                         radioOptionsToUse.forEach(opt => {
                             const isChecked = radioDiv.getAttribute('data-stored-value') === opt.value ? 'checked' : '';
-                            const isDisabled = (rollNum === 1 && opt.value === '目玉'); // 1回目は目玉不可
+                            const isDisabled = (rollNum === 1 && (opt.value === '目玉' || opt.value === '目玉(確定)')); // 1回目は目玉不可
                             const disabledAttr = isDisabled ? 'disabled' : '';
 
                             const inputName = `seeker-roll-${rollNum}`;
@@ -561,14 +569,18 @@
             if (isSearching) return;
 
             foundCount = 0;
+            foundSeeds.clear(); // ★修正箇所: 検索開始時にSetをクリア
             isFullSearchMode = isFullSearch;
             searchEndedByFound = false; 
             finalSearchedSeed = null;
+            resultsArea.innerHTML = '';
+            foundLimitMessage.style.display = 'none';
+            
 
             const gachaId = gachaSelector.value;
             const gacha = gachaMaster[gachaId]; 
             const stopOnFound = stopOnFoundCheckbox.checked;
-            const currentInputMethod = getCurrentInputMethod(); // '0' or '1'
+            const currentInputMethod = getCurrentInputMethod(); 
             
             // 共通の入力チェックとシーケンス取得
             const targetSequenceNames = []; 
@@ -581,7 +593,6 @@
                     }
                 } else { // radio
                     const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
-                    // ラジオボタンのvalueを取得 (未選択の場合は空文字)
                     if (checkedRadio) {
                         value = checkedRadio.value; 
                     }
@@ -594,7 +605,6 @@
                 }
             }
             
-            // 以降のロジックは変更なし
             const hasGuaranteedFeatured = targetSequenceNames.includes('目玉(確定)');
             if (hasGuaranteedFeatured) {
                 if (targetSequenceNames.length < 8) { alert('目玉(確定)が含まれる場合は、最低8回分のガチャ結果を入力してください。'); return; }
@@ -630,6 +640,7 @@
             if (!isFullSearch && (searchRangeValue <= 0 || !isFinite(searchRangeValue))) {
                 alert('部分検索の検索SEED数には1以上の有効な値を入力してください。'); return;
             }
+            // totalSearchRange は常に実際の検索件数になるように設定
             const totalSearchRange = isFullSearch ? FULL_32_BIT_SPACE : searchRangeValue; 
 
             isSearching = true;
@@ -651,7 +662,6 @@
                     : `カウンタ順で${totalSearchRange.toLocaleString()}件を並列検索します。`;
             }
 
-            resultsArea.innerHTML = '';
             
             let totalProcessed = 0;
             let workersFinished = 0;
@@ -682,29 +692,53 @@
                 if (searchEndedByFound) { e.target.terminate(); return; }
 
                 if (type === 'found') {
+                    // ★修正箇所: 重複チェックとカウントアップ
+                    if (foundSeeds.has(seed)) {
+                        return; // 既に発見済みの場合は無視
+                    }
+                    foundSeeds.add(seed);
+
                     foundCount++;
-                    const li = document.createElement('li');
-                    li.textContent = `SEED発見: ${seed}`;
-                    resultsArea.appendChild(li);
+                    if (foundCount <= MAX_DISPLAY_COUNT) {
+                        const li = document.createElement('li');
+                        li.textContent = `SEED発見: ${seed}`;
+                        resultsArea.appendChild(li);
+                    } else if (foundCount === MAX_DISPLAY_COUNT + 1) {
+                         // 21件目でメッセージを表示
+                        foundLimitMessage.style.display = 'block';
+                    }
                 } else if (type === 'progress') {
                     totalProcessed += processed;
+                    
                     const progress = totalProcessed / totalSearchRange;
+                    // 表示上のProcessedをtotalSearchRangeを超えないように制限する
+                    const displayProcessed = Math.min(totalProcessed, totalSearchRange);
+
                     progressBar.value = progress;
-                    progressText.textContent = `${formatNumberWithJapaneseUnits(totalProcessed)} / ${formatNumberWithJapaneseUnits(totalSearchRange)} (${(progress * 100).toFixed(2)}%)`;
+                    progressText.textContent = `${formatNumberWithJapaneseUnits(displayProcessed)} / ${formatNumberWithJapaneseUnits(totalSearchRange)} (${(progress * 100).toFixed(2)}%)`;
+                    
                     const elapsedTime = performance.now() - startTime;
                     if (elapsedTime > 200 && totalProcessed > 0) {
-                        const speed = totalProcessed / elapsedTime;
-                        const etaMs = (totalSearchRange - totalProcessed) / speed;
+                        const speed = displayProcessed / elapsedTime;
+                        const etaMs = (totalSearchRange - displayProcessed) / speed;
                         etaDisplay.textContent = `推定残り時間: ${formatETA(etaMs)}`;
                     }
                 } else if (type === 'stop_found') {
+                    // Stop on found時は、報告されたSEEDをユニークとして追加してから停止処理を行う
+                    if (seed && !foundSeeds.has(seed)) {
+                        foundSeeds.add(seed);
+                        foundCount++;
+                    }
+
                     searchEndedByFound = true;
                     finalSearchedSeed = finalSeed;
 
                     totalProcessed += processed || 0; 
                     
                     const duration = performance.now() - startTime;
-                    let finalMessage = `SEED発見により探索を停止: ${formatNumberWithJapaneseUnits(totalProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
+                    const displayProcessed = Math.min(totalProcessed, totalSearchRange);
+
+                    let finalMessage = `SEED発見により探索を停止: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
 
                     terminateAllWorkers();
 
@@ -723,11 +757,13 @@
                         const duration = performance.now() - startTime;
                         
                         let finalSeedMessage = finalSearchedSeed ? ` 最終検索SEED: ${finalSearchedSeed}` : '';
+                        const displayProcessed = Math.min(totalProcessed, totalSearchRange);
                         
-                        let finalMessage = `検索完了: ${formatNumberWithJapaneseUnits(totalProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
+                        // foundCountはユニーク件数を使用
+                        let finalMessage = `検索完了: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
 
-                        if (!isFullSearchMode && totalProcessed > 0 && duration > 10) {
-                            const speed = totalProcessed / duration;
+                        if (!isFullSearchMode && displayProcessed > 0 && duration > 10) {
+                            const speed = displayProcessed / duration;
                             const etaTotalMs = FULL_32_BIT_SPACE / speed; 
                             const formattedEta = formatShortDuration(etaTotalMs); 
                             finalMessage += `\n(参考: 43億件の全探索には約 ${formattedEta} かかる見込みです)`;
@@ -800,7 +836,11 @@
                         });
                     }
                     
-                    currentInitialSeed = (currentInitialSeed + countForCounterWorker);
+                    // 次のワーカーの開始シードを計算 (32-bit整数としてラップ)
+                    currentInitialSeed = (currentInitialSeed + countForCounterWorker) >>> 0;
+                    // カウンタ順検索は1から4294967295まで。0になったら1に戻す
+                    if (currentInitialSeed === 0) currentInitialSeed = 1; 
+                    
                     currentTotalCount += countForCounterWorker;
 
                 }
@@ -830,12 +870,12 @@
                     }
                 } else { // radio
                     const radioDiv = document.getElementById(`radio-container-${rollNum}`);
-                    // ★修正箇所: 未選択（value=""）のラジオボタンを選択状態にする
+                    // 未選択（value=""）のラジオボタンを選択状態にする
                     const unselectedRadio = document.querySelector(`input[name="seeker-roll-${rollNum}"][value=""]`);
                     if (unselectedRadio) unselectedRadio.checked = true;
 
                     if (radioDiv) {
-                        // ★修正箇所: 未選択なのでハイライトを解除
+                        // 未選択なのでハイライトを解除
                         radioDiv.closest('tr').classList.remove('selected-row');
                         radioDiv.setAttribute('data-stored-value', ''); // 保存値をクリア
                     }
@@ -870,6 +910,7 @@
             stopButton.style.display = 'none';
             progressContainer.style.display = 'none';
             searchRangeControl.style.display = 'block';
+            foundLimitMessage.style.display = foundCount > MAX_DISPLAY_COUNT ? 'block' : 'none'; // 最終結果時にメッセージを再評価
             startSeedNote.textContent = '過去のSEEDが分かれば検索時間短縮のため入力してください。';
             if (message) statusEl.textContent = message;
             terminateAllWorkers(); 
@@ -890,7 +931,7 @@
         const urlGachaId = params.get('gacha');
         const urlStartSeed = params.get('startSeed');
         const urlSequence = params.get('sequence');
-        // 【修正】入力形式の取得 (デフォルトは'0')
+        // 入力形式の取得 (デフォルトは'0')
         const urlInputMethod = params.get('inputMethod') || INPUT_METHOD_SELECT; 
         
         // ガチャ選択の初期化
