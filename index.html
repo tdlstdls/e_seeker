@@ -140,7 +140,7 @@
         /* ボタンの色設定 */
         #fullCounterSearchButton { background-color: #ffc107; color: #333;} /* 全件検索: Yellow */
         #partialSearchButton { background-color: #007bff; } /* 近接検索（部分）: Blue */
-        #speedTestButton { background-color: #dc3545; } /* スピードテスト: Red */
+        #speedTestButton { background-color: #dc3545; } /* 分割検索（連番）: Red */
 
         /* フォーム切り替え用のスタイル */
         #inputMethodToggle {
@@ -199,7 +199,7 @@
     <div id="search-buttons-container">
         <button id="fullCounterSearchButton">全件検索</button>
         <button id="partialSearchButton">近接検索（部分）</button>
-        <button id="speedTestButton">スピードテスト</button>
+        <button id="speedTestButton">分割検索（連番）</button>
         
         <button id="clearButton" style="background-color: #6c757d;">選択クリア</button>
         <button id="stopButton" style="background-color: #dc3545; display: none;">停止</button>
@@ -208,7 +208,7 @@
 
     <div class="controls" id="searchRangeControl" style="padding-top: 0; margin-top: -10px;">
         <div class="input-item">
-            <label for="searchRange">検索SEED数 (部分検索・スピードテスト時のみ)</label>
+            <label for="searchRange">検索SEED数 (近接検索・分割検索（連番）時のみ)</label>
             <input type="number" id="searchRange" value="100000000"> </div>
     </div>
    
@@ -485,7 +485,7 @@
         const partialSearchButton = document.getElementById('partialSearchButton'); // 近接検索（部分）
         // 新規ボタン
         const fullCounterSearchButton = document.getElementById('fullCounterSearchButton'); // 全件検索（連番）
-        const speedTestButton = document.getElementById('speedTestButton'); // スピードテスト
+        const speedTestButton = document.getElementById('speedTestButton'); // 分割検索（連番）
         
         const clearButton = document.getElementById('clearButton');
         const stopButton = document.getElementById('stopButton');
@@ -738,7 +738,7 @@
 
             const searchRangeValue = parseInt(searchRangeInput.value, 10);
             if (!isFullSearch && (searchRangeValue <= 0 || !isFinite(searchRangeValue))) {
-                alert('部分検索・スピードテストの検索SEED数には1以上の有効な値を入力してください。'); return;
+                alert('部分検索・分割検索（連番）の検索SEED数には1以上の有効な値を入力してください。'); return;
             }
             
             const totalSearchRange = isFullSearch ? TOTAL_32_BIT_SPACE : searchRangeValue; 
@@ -776,7 +776,7 @@
             clearButton.classList.add('hidden-control');
             stopButton.style.display = 'inline-block';
             
-            // 部分検索/スピードテストの時のみ表示
+            // 部分検索/分割検索（連番）の時のみ表示
             searchRangeControl.style.display = isFullSearch ? 'none' : 'block';
             
             let searchMethodName = '';
@@ -789,7 +789,7 @@
                 searchMethodName = '近接検索（XORSHIFT32順）部分検索';
                 noteText = `SEED: ${initialStartSeed} からのXORSHIFT32順で${totalSearchRange.toLocaleString()}件をJump Aheadで並列分割検索します。`;
             } else if (mode === 'speed_test') {
-                searchMethodName = 'スピードテスト（連番）';
+                searchMethodName = '分割検索（連番）';
                 noteText = `SEED: ${initialStartSeed} からの連番で${totalSearchRange.toLocaleString()}件を並列分割検索します。`;
             }
 
@@ -821,7 +821,7 @@
                 fullCounterSearchButton.disabled = partialSearchButton.disabled = speedTestButton.disabled = false;
                 fullCounterSearchButton.textContent = '全件検索'; // 修正
                 partialSearchButton.textContent = '近接検索（部分）';
-                speedTestButton.textContent = 'スピードテスト';
+                speedTestButton.textContent = '分割検索（連番）';
                 clearButton.classList.remove('hidden-control');
                 stopButton.style.display = 'none';
                 progressContainer.style.display = 'none';
@@ -1034,7 +1034,7 @@
                     
                     // --- Workerごとの開始SEEDと検索件数の計算 ---
                     if (isCounterSearch) {
-                        // (1) 全件検索（連番） & (3) スピードテスト（連番）
+                        // (1) 全件検索（連番） & (3) 分割検索（連番）
                         // 連番のため、Jump Aheadは使わず、単純な数値範囲で分割
                         totalIndex = i * baseRange;
                         countForWorker = baseRange;
