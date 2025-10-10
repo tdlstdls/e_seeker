@@ -230,7 +230,7 @@
     // --- マスターデータ (既存のシミュレーターから流用) ---
     const gachaMaster = {
         '34': {
-            name: 'ハロウィン',
+            name: '(旧)ハロウィン',
             featuredItemRate: 600,
             rarityRates: { '0': 2000, '1': 5000, '2': 3000, '3': 0, '4': 0 },
             pool: [0, 2, 3, 4, 5, 10, 11, 12, 14]
@@ -240,12 +240,19 @@
             featuredItemRate: 500,
             rarityRates: { '0': 1000, '1': 5000, '2': 3000, '3': 1000, '4': 0 },
             pool: [0, 2, 3, 4, 5, 10, 11, 12, 14, 375, 381, 689]
+        },
+        '44': {
+            name: 'ハロウィン',
+            featuredItemRate: 500,
+            rarityRates: { '0': 2000, '1': 4900, '2': 3000, '3': 0, '4': 100 },
+            pool: [0, 2, 3, 4, 5, 10, 11, 12, 14, 18]
         }
     };
     const itemMaster = {
         0: { name: "スピダ", rarity: 1 }, 2: { name: "ネコボン", rarity: 2 }, 3: { name: "ニャンピュ", rarity: 1 },
         4: { name: "おかめ", rarity: 2 }, 5: { name: "スニャ", rarity: 2 }, 10: { name: "5千XP", rarity: 0 },
         11: { name: "1万XP", rarity: 1 }, 12: { name: "3万XP", rarity: 1 }, 14: { name: "10万XP", rarity: 2 },
+        18: { name: "200万XP", rarity: 4 },
         375: { name: "記念ネコ", rarity: 3 }, 381: { name: "ねこ農家", rarity: 3 }, 689: { name: "石の上にも10年ネコ", rarity: 3 }
     };
     const itemNameMap = Object.fromEntries(Object.entries(itemMaster).map(([id, { name }]) => [name, parseInt(id, 10)]));
@@ -986,4 +993,5 @@
 
 </script>
 </body>
+
 </html>
