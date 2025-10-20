@@ -1,12 +1,14 @@
-// seeker_worker.js (with WASM fallback)
+// seeker_worker.js
 
-// --- Global Data ---
-let gachaMaster; 
-let itemMaster; 
-let itemNameMap; 
-let wasmExports = null;
+// --- Global Data (populated by main thread) ---
+let gachaData;
+let itemRarityMap;
 
-// --- Standalone JS Simulation Logic ---
+// --- Constants ---
+const FEAT_CODE = -1; // '目玉'
+
+// --- Utilities ---
+
 function xorshift32_js(seed) {
     let x = seed;
     x ^= x << 13;
@@ -15,155 +17,241 @@ function xorshift32_js(seed) {
     return x >>> 0;
 }
 
-function advanceOneStep_js(currentSeed, lastItemId, gacha) {
-    const s1 = xorshift32_js(currentSeed);
-    if ((s1 % 10000) < gacha.featuredItemRate) {
-        return { isFeatured: true, drawnItemId: -1, endSeed: s1, lastItemId: -1 };
+function inverse_xorshift32_js(y) {
+    let x = y;
+    x ^= x << 15;
+    x ^= x << 30;
+    x ^= x >>> 17;
+    x ^= x << 13;
+    x ^= x << 26;
+    return x >>> 0;
+}
+
+function checkCondition(result, op, value1) {
+    switch (op) {
+        case "EQ": return result === value1;
+        case "LT": return result < value1;
+        case "LE": return result <= value1;
+        case "GT": return result > value1;
+        case "GE": return result >= value1;
+        case "NE": return result !== value1;
+        default: return false;
     }
-    const s2 = xorshift32_js(s1);
+}
+
+// --- Forward Simulation Logic ---
+
+function advanceOneStep_js(currentSeed, lastRelevantRareItemId) {
+    let currentSeedInternal = currentSeed;
+    let consumedCount = 0;
+
+    const s1 = xorshift32_js(currentSeedInternal);
+    currentSeedInternal = s1;
+    consumedCount++;
+
+    if ((s1 % 10000) < gachaData.featuredItemRate) {
+        return { isFeatured: true, isRare: false, drawnItemId: FEAT_CODE, endSeed: s1, consumed: consumedCount };
+    }
+
+    const s2 = xorshift32_js(currentSeedInternal);
+    currentSeedInternal = s2;
+    consumedCount++;
+
     const rarityVal = s2 % 10000;
     let rarityId = 0;
-    const cumulativeRates = gacha.cumulativeRarityRates;
+    const cumulativeRates = gachaData.cumulativeRarityRates;
     for (let i = 0; i < cumulativeRates.length; i++) {
         if (rarityVal < cumulativeRates[i]) {
             rarityId = i;
             break;
         }
     }
-    const s3 = xorshift32_js(s2);
-    const itemPool = gacha.rarityItems[rarityId]; 
+    
+    let s3 = xorshift32_js(currentSeedInternal);
+    currentSeedInternal = s3;
+    consumedCount++;
+
+    const rarityIdStr = rarityId.toString();
+    let itemPool = gachaData.rarityItems[rarityIdStr];
+    
     if (!itemPool || itemPool.length === 0) {
-        // ありえないケースだが、安全のため
-        return { isFeatured: false, drawnItemId: -2, endSeed: s3, lastItemId }; 
+         return { isFeatured: false, isRare: rarityId === 1, drawnItemId: -99, endSeed: currentSeedInternal, consumed: consumedCount };
     }
+    
     let drawnItemId = itemPool[s3 % itemPool.length];
     
-    // レア被り判定 (レアリティ1のみ)
-    const canReRollRarity1 = gacha.rarityItems[1] && gacha.rarityItems[1].length >= 2;
-    if (canReRollRarity1 && rarityId === 1 && lastItemId === drawnItemId) {
-        const s4 = xorshift32_js(s3);
-        const reRollIndex = s4 % (itemPool.length - 1);
-        let newDrawnItemId = -1;
-        let nonMatchingCounter = 0;
-        for (const itemId of itemPool) {
-            if (itemId !== drawnItemId) {
-                if (nonMatchingCounter === reRollIndex) {
-                    newDrawnItemId = itemId;
-                    break;
-                }
-                nonMatchingCounter++;
-            }
+    if (rarityId === 1 && lastRelevantRareItemId !== -1 && drawnItemId === lastRelevantRareItemId) {
+        s3 = xorshift32_js(currentSeedInternal); 
+        currentSeedInternal = s3;
+        consumedCount++;
+        const filteredPool = itemPool.filter(id => id !== drawnItemId); 
+        if (filteredPool.length > 0) {
+            drawnItemId = filteredPool[s3 % filteredPool.length];
         }
-        drawnItemId = (newDrawnItemId !== -1) ? newDrawnItemId : drawnItemId;
-        return { isFeatured: false, drawnItemId, endSeed: s4, lastItemId: drawnItemId };
     }
-    return { isFeatured: false, drawnItemId, endSeed: s3, lastItemId: drawnItemId };
+
+    return { 
+        isFeatured: false, 
+        isRare: rarityId === 1, 
+        drawnItemId: drawnItemId, 
+        endSeed: currentSeedInternal, 
+        consumed: consumedCount 
+    };
 }
 
+function fullForwardVerification(startSeedCandidate, targetItemIds) {
+    let currentSeed = startSeedCandidate;
+    let lastRelevantRareItemId = -1;
 
-function performSearch_js(startSeed, count, gacha, targetSequence, stopOnFound, workerIndex, searchMode) {
-    let currentSeedToTest = startSeed;
+    for (const targetItemId of targetItemIds) {
+        const result = advanceOneStep_js(currentSeed, lastRelevantRareItemId);
+        
+        let match = false;
+        if (targetItemId === FEAT_CODE) {
+            if (result.isFeatured) match = true;
+        } else if (result.drawnItemId === targetItemId) {
+            match = true;
+        }
+
+        if (!match) return false;
+        
+        currentSeed = result.endSeed;
+        if (result.isRare) {
+            lastRelevantRareItemId = result.drawnItemId;
+        } else if (!result.isFeatured) {
+            lastRelevantRareItemId = -1;
+        }
+    }
+    return true;
+}
+
+// --- Search Algorithms ---
+
+/**
+ * ALGORITHM 1: Forward Search (for Partial Search & Fallback)
+ */
+function performForwardSearch(initialStartSeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, searchMode) {
     let processedCount = 0;
-    
-    const FEAT_CODE = -1; 
-    const G_FEAT_CODE = -2;
+    let currentSeedToTest = initialStartSeed;
+    const isCounterSearch = (searchMode === 'full_counter');
+    const PROGRESS_INTERVAL = 100000;
 
     for (let i = 0; i < count; i++) {
-        
-        processedCount++;
+        let isSeedValid = true;
+        if (priorityChecks.length > 0) {
+            const check = priorityChecks[0];
+            const { seedIndex, mod, op, value1, totalSeedOffset } = check;
+            let rollStartSeed = currentSeedToTest;
+            for (let j = 0; j < totalSeedOffset; j++) {
+                rollStartSeed = xorshift32_js(rollStartSeed);
+            }
+            let checkSeed = rollStartSeed;
+            for (let j = 0; j < seedIndex; j++) {
+                checkSeed = xorshift32_js(checkSeed);
+            }
+            if (!checkCondition(checkSeed % mod, op, value1)) {
+                isSeedValid = false;
+            }
+        }
 
-        let fullSequenceMatched = true;
-        let simSeed = currentSeedToTest; 
-        let simLastItemId = -1;
-        
-        for (let k = 0; k < targetSequence.length; k++) {
-            const targetCode = targetSequence[k]; 
-            
-            let currentStepMatched = false;
-
-            if (targetCode === G_FEAT_CODE) {
-                // 目玉(確定)の場合: 常に成功。シードを消費しない。
-                currentStepMatched = true;
-                // simSeedとsimLastItemIdは更新されない
-                
-            } else {
-                // 目玉または通常アイテムの場合、advanceOneStep_jsでシミュレーションを実行（SEEDを消費）
-                const stepResult = advanceOneStep_js(simSeed, simLastItemId, gacha);
-                
-                if (targetCode === FEAT_CODE) {
-                    currentStepMatched = stepResult.isFeatured; // 目玉
-                } else {
-                    currentStepMatched = !stepResult.isFeatured && stepResult.drawnItemId === targetCode; // 通常アイテム
+        if (isSeedValid) {
+            if (fullForwardVerification(currentSeedToTest, targetItemIds)) {
+                postMessage({ type: 'found', seed: currentSeedToTest, workerIndex });
+                if (stopOnFound) {
+                    postMessage({ type: 'stop_found', seed: currentSeedToTest, workerIndex, processed: processedCount });
+                    return;
                 }
-                
-                // 次のループのためにsimSeedとsimLastItemIdを更新
-                simSeed = stepResult.endSeed;
-                simLastItemId = stepResult.lastItemId;
-            }
-            
-            if (!currentStepMatched) {
-                fullSequenceMatched = false;
-                break;
             }
         }
 
-        if (fullSequenceMatched) {
-            postMessage({ type: 'found', seed: currentSeedToTest, workerIndex });
-            if (stopOnFound) {
-                const processedSinceLastUpdate = processedCount % 100000;
-                if (processedSinceLastUpdate > 0) postMessage({ type: 'progress', processed: processedSinceLastUpdate, workerIndex });
-                postMessage({ type: 'stop_found', processed: processedCount, finalSeed: currentSeedToTest, workerIndex }); 
-                return;
-            }
+        processedCount++;
+        if (processedCount % PROGRESS_INTERVAL === 0) {
+            postMessage({ type: 'progress', processed: PROGRESS_INTERVAL, workerIndex });
         }
-        
-        // Progress update logic
-        if (processedCount % 100000 === 0) {
-            postMessage({ type: 'progress', processed: 100000, workerIndex });
-        }
-        
-        // Seedの更新ロジックをsearchModeに応じて分岐
-        if (searchMode === 'partial_xorshift') { // full_xorshiftの言及を削除
-            // (2) 近接検索（部分）: XORSHIFT32順で連鎖
-            currentSeedToTest = xorshift32_js(currentSeedToTest);
-        } else {
-            // (1) 全件検索（連番） & (3) スピードテスト（連番）: カウンター式（連番）
+
+        if (isCounterSearch) {
             currentSeedToTest = (currentSeedToTest + 1) >>> 0;
+        } else {
+            currentSeedToTest = xorshift32_js(currentSeedToTest);
         }
     }
-    
-    // Remaining progress update
-    const remainingProgress = processedCount % 100000;
-    if (remainingProgress > 0) postMessage({ type: 'progress', processed: remainingProgress, workerIndex });
-    
-    // 完了メッセージ: finalSeedは、最後にチェックしたSEED (currentSeedToTest)
-    // 次の開始SEEDを引き継ぎに使うため、現在のcurrentSeedToTestを渡す
-    postMessage({ type: 'done', processed: processedCount, finalSeed: currentSeedToTest, workerIndex });
+
+    const remaining = processedCount % PROGRESS_INTERVAL;
+    if (remaining > 0) {
+        postMessage({ type: 'progress', processed: remaining, workerIndex });
+    }
+    postMessage({ type: 'done', processed: count, finalSeed: currentSeedToTest, workerIndex });
 }
 
-function performSearch_wasm(startSeed, count, gacha, targetSequence, stopOnFound, workerIndex, searchMode) {
-    // WASMが複雑なジョブチェーンに対応しないため、JS版にフォールバック
-    performSearch_js(startSeed, count, gacha, targetSequence, stopOnFound, workerIndex, searchMode);
+/**
+ * ALGORITHM 2: Inverse Search (for Full Search)
+ */
+function performInverseSearch(initialPrioritySeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex) {
+    const check = priorityChecks[0];
+    const { seedIndex, mod, op, value1, totalSeedOffset } = check;
+    const totalInverseSteps = totalSeedOffset + seedIndex;
+    let processedCount = 0;
+    const PROGRESS_INTERVAL = 10000000; // Larger interval for this faster loop
+
+    // This worker is assigned a contiguous block of the *priority seed* space to check.
+    for (let i = 0; i < count; i++) {
+        const prioritySeedCandidate = initialPrioritySeed + i;
+
+        if (checkCondition(prioritySeedCandidate % mod, op, value1)) {
+            let startSeedCandidate = prioritySeedCandidate;
+            for (let j = 0; j < totalInverseSteps; j++) {
+                startSeedCandidate = inverse_xorshift32_js(startSeedCandidate);
+            }
+
+            if (fullForwardVerification(startSeedCandidate, targetItemIds)) {
+                postMessage({ type: 'found', seed: startSeedCandidate, workerIndex });
+                if (stopOnFound) {
+                    postMessage({ type: 'stop_found', seed: startSeedCandidate, finalSeed: startSeedCandidate, workerIndex, processed: processedCount });
+                    return;
+                }
+            }
+        }
+
+        processedCount++;
+        if (processedCount % PROGRESS_INTERVAL === 0) {
+            postMessage({ type: 'progress', processed: PROGRESS_INTERVAL, workerIndex });
+        }
+    }
+
+    const remaining = processedCount % PROGRESS_INTERVAL;
+    if (remaining > 0) {
+        postMessage({ type: 'progress', processed: remaining, workerIndex });
+    }
+    postMessage({ type: 'done', processed: count, workerIndex });
 }
 
 
-// --- Main Message Handler ---
+// --- Main Message Handler --- 
+
 self.onmessage = async function(e) {
-    const wasmLoaded = false; 
-    
     const {
         workerIndex, 
-        initialStartSeed, count, gachaId,
-        targetSequence, gachaData, stopOnFound, searchMode
+        initialStartSeed, 
+        count, 
+        gachaId,
+        targetItemIdsForWorker, 
+        priorityChecks, 
+        gachaData: gachaDataFromMain, 
+        stopOnFound, 
+        searchMode 
     } = e.data;
 
-    gachaMaster = { [gachaId]: gachaData }; 
-    let actualStartSeed = initialStartSeed;
+    gachaData = gachaDataFromMain;
+    itemRarityMap = Object.fromEntries(Object.entries(gachaData.rarityItems).flatMap(([rarity, items]) => items.map(id => [id, parseInt(rarity, 10)])));
 
-
-    if (wasmLoaded) {
-        performSearch_wasm(actualStartSeed, count, gachaMaster[gachaId], targetSequence, stopOnFound, workerIndex, searchMode);
+    // ROUTER: Decide which algorithm to use.
+    if (searchMode === 'full_counter' && priorityChecks.length > 0) {
+        // For full searches with a valid priority check, use the ultra-fast inverse algorithm.
+        // The main thread provides a range of the *priority seed* space.
+        performInverseSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex);
     } else {
-        performSearch_js(actualStartSeed, count, gachaMaster[gachaId], targetSequence, stopOnFound, workerIndex, searchMode);
+        // For partial (xorshift) searches or searches without a safe priority check, 
+        // use the reliable forward-search algorithm.
+        performForwardSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex, searchMode);
     }
 };
