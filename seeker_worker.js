@@ -158,7 +158,7 @@ function performForwardSearch(initialStartSeed, count, targetItemIds, priorityCh
             if (fullForwardVerification(currentSeedToTest, targetItemIds)) {
                 postMessage({ type: 'found', seed: currentSeedToTest, workerIndex });
                 if (stopOnFound) {
-                    postMessage({ type: 'stop_found', seed: currentSeedToTest, workerIndex, processed: processedCount });
+                    postMessage({ type: 'stop_found', seed: currentSeedToTest, finalSeed: currentSeedToTest, workerIndex, processed: processedCount });
                     return;
                 }
             }
