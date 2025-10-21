@@ -41,18 +41,22 @@ function checkCondition(result, op, value1) {
 
 // --- Forward Simulation Logic ---
 
-function advanceOneStep_js(currentSeed, lastRelevantRareItemId) {
+function advanceOneStep_js(currentSeed, lastRelevantRareItemId, completionState) {
     let currentSeedInternal = currentSeed;
     let consumedCount = 0;
+    const isCompleted = completionState === 'completed';
 
-    const s1 = xorshift32_js(currentSeedInternal);
-    currentSeedInternal = s1;
-    consumedCount++;
-
-    if ((s1 % 10000) < gachaData.featuredItemRate) {
-        return { isFeatured: true, isRare: false, drawnItemId: FEAT_CODE, endSeed: s1, consumed: consumedCount };
+    // S0: 目玉判定 (未コンプの場合のみ)
+    if (!isCompleted) {
+        const s1 = xorshift32_js(currentSeedInternal);
+        currentSeedInternal = s1;
+        consumedCount++;
+        if ((s1 % 10000) < gachaData.featuredItemRate) {
+            return { isFeatured: true, isRare: false, drawnItemId: FEAT_CODE, endSeed: s1, consumed: consumedCount };
+        }
     }
 
+    // S1: レアリティ判定
     const s2 = xorshift32_js(currentSeedInternal);
     currentSeedInternal = s2;
     consumedCount++;
@@ -67,6 +71,7 @@ function advanceOneStep_js(currentSeed, lastRelevantRareItemId) {
         }
     }
     
+    // S2: アイテム判定
     let s3 = xorshift32_js(currentSeedInternal);
     currentSeedInternal = s3;
     consumedCount++;
@@ -80,6 +85,7 @@ function advanceOneStep_js(currentSeed, lastRelevantRareItemId) {
     
     let drawnItemId = itemPool[s3 % itemPool.length];
     
+    // S3: レア被り救済
     if (rarityId === 1 && lastRelevantRareItemId !== -1 && drawnItemId === lastRelevantRareItemId) {
         s3 = xorshift32_js(currentSeedInternal); 
         currentSeedInternal = s3;
@@ -99,12 +105,12 @@ function advanceOneStep_js(currentSeed, lastRelevantRareItemId) {
     };
 }
 
-function fullForwardVerification(startSeedCandidate, targetItemIds) {
+function fullForwardVerification(startSeedCandidate, targetItemIds, completionState) {
     let currentSeed = startSeedCandidate;
     let lastRelevantRareItemId = -1;
 
     for (const targetItemId of targetItemIds) {
-        const result = advanceOneStep_js(currentSeed, lastRelevantRareItemId);
+        const result = advanceOneStep_js(currentSeed, lastRelevantRareItemId, completionState);
         
         let match = false;
         if (targetItemId === FEAT_CODE) {
@@ -130,7 +136,7 @@ function fullForwardVerification(startSeedCandidate, targetItemIds) {
 /**
  * ALGORITHM 1: Forward Search (for Partial Search & Fallback)
  */
-function performForwardSearch(initialStartSeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, searchMode) {
+function performForwardSearch(initialStartSeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, searchMode, completionState) {
     let processedCount = 0;
     let currentSeedToTest = initialStartSeed;
     const isCounterSearch = (searchMode === 'full_counter');
@@ -155,7 +161,7 @@ function performForwardSearch(initialStartSeed, count, targetItemIds, priorityCh
         }
 
         if (isSeedValid) {
-            if (fullForwardVerification(currentSeedToTest, targetItemIds)) {
+            if (fullForwardVerification(currentSeedToTest, targetItemIds, completionState)) {
                 postMessage({ type: 'found', seed: currentSeedToTest, workerIndex });
                 if (stopOnFound) {
                     postMessage({ type: 'stop_found', seed: currentSeedToTest, finalSeed: currentSeedToTest, workerIndex, processed: processedCount });
@@ -186,7 +192,7 @@ function performForwardSearch(initialStartSeed, count, targetItemIds, priorityCh
 /**
  * ALGORITHM 2: Inverse Search (for Full Search)
  */
-function performInverseSearch(initialPrioritySeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex) {
+function performInverseSearch(initialPrioritySeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, completionState) {
     const check = priorityChecks[0];
     const { seedIndex, mod, op, value1, totalSeedOffset } = check;
     const totalInverseSteps = totalSeedOffset + seedIndex;
@@ -203,7 +209,7 @@ function performInverseSearch(initialPrioritySeed, count, targetItemIds, priorit
                 startSeedCandidate = inverse_xorshift32_js(startSeedCandidate);
             }
 
-            if (fullForwardVerification(startSeedCandidate, targetItemIds)) {
+            if (fullForwardVerification(startSeedCandidate, targetItemIds, completionState)) {
                 postMessage({ type: 'found', seed: startSeedCandidate, workerIndex });
                 if (stopOnFound) {
                     postMessage({ type: 'stop_found', seed: startSeedCandidate, finalSeed: startSeedCandidate, workerIndex, processed: processedCount });
@@ -238,7 +244,8 @@ self.onmessage = async function(e) {
         priorityChecks, 
         gachaData: gachaDataFromMain, 
         stopOnFound, 
-        searchMode 
+        searchMode, 
+        completionState
     } = e.data;
 
     gachaData = gachaDataFromMain;
@@ -248,10 +255,10 @@ self.onmessage = async function(e) {
     if (searchMode === 'full_counter' && priorityChecks.length > 0) {
         // For full searches with a valid priority check, use the ultra-fast inverse algorithm.
         // The main thread provides a range of the *priority seed* space.
-        performInverseSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex);
+        performInverseSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex, completionState);
     } else {
         // For partial (xorshift) searches or searches without a safe priority check, 
         // use the reliable forward-search algorithm.
-        performForwardSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex, searchMode);
+        performForwardSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex, searchMode, completionState);
     }
 };

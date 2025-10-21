@@ -156,6 +156,13 @@
 
     <div class="sequence-inputs">
         <h2>ガチャ結果シーケンス (15～16回推奨)</h2>
+        <div style="margin-bottom: 10px;">
+            <label for="completionState">ガチャの状態:</label>
+            <select id="completionState">
+                <option value="not_completed">未コンプ</option>
+                <option value="completed">コンプ済み</option>
+            </select>
+        </div>
         <div id="inputMethodToggle">
             入力形式:
             <label><input type="radio" name="input_method_radio" value="0" id="method-0" checked>プルダウンリスト</label>
@@ -372,9 +379,20 @@
         return selectedMethod; // '0' or '1'
     }
 
+    function getCompletionState() {
+        return document.getElementById('completionState').value;
+    }
+
     function updateUrl(inputMethodOverride = null) {
         const params = new URLSearchParams();
         params.set('gacha', currentGachaId);
+
+        const completionState = getCompletionState();
+        if (completionState === 'completed') {
+            params.set('completed', '1');
+        } else {
+            params.delete('completed');
+        }
         
         const currentInputMethod = inputMethodOverride || getCurrentInputMethod();
         
@@ -462,9 +480,10 @@
 
 
     // --- 【更新】早期離脱条件（priorityChecks）生成関数 ---
-    function createPriorityChecks(filteredSequence, gacha) {
+    function createPriorityChecks(filteredSequence, gacha, completionState) {
         const checks = [];
         const TOTAL_RATE = 10000;
+        const isCompleted = completionState === 'completed';
 
         // ステップ1: 「安全地帯」の境界を特定する
         let safeZoneBoundary = filteredSequence.length;
@@ -490,7 +509,7 @@
             const currentOffset = cumulativeSeedOffset; // この抽選ステップ開始時の合計オフセット
 
             // --- チェック候補を生成 ---
-            if (itemId === FEAT_CODE) {
+            if (itemId === FEAT_CODE && !isCompleted) {
                 const probability = gacha.featuredItemRate / TOTAL_RATE;
                 if (probability > 0) {
                     checks.push({
@@ -502,12 +521,15 @@
             } else {
                 const itemRarity = itemRarityMap[itemId];
                 if (itemRarity === null || itemRarity === undefined) {
-                    cumulativeSeedOffset += 3; // 不明な場合は3と仮定
+                    cumulativeSeedOffset += isCompleted ? 2 : 3; // 不明な場合はコンプ状態で2、未コンプで3と仮定
                     continue;
                 }
                 const rarityIdStr = itemRarity.toString();
 
-                // レアリティ判定(S2)のチェック候補
+                const raritySeedIndex = isCompleted ? 1 : 2;
+                const itemSeedIndex = isCompleted ? 2 : 3;
+
+                // レアリティ判定のチェック候補
                 const rarityRate = gacha.rarityRates[rarityIdStr];
                 if (rarityRate > 0) {
                     const probability = rarityRate / TOTAL_RATE;
@@ -515,25 +537,25 @@
                     const endRate = gacha.cumulativeRarityRates[itemRarity];
                     
                     if (startRate === 0) { // 最低レアリティ
-                        checks.push({ seedIndex: 2, mod: TOTAL_RATE, op: "LT", value1: endRate, probability, totalSeedOffset: currentOffset });
+                        checks.push({ seedIndex: raritySeedIndex, mod: TOTAL_RATE, op: "LT", value1: endRate, probability, totalSeedOffset: currentOffset });
                     } else if (endRate === TOTAL_RATE) { // 最高レアリティ
-                        checks.push({ seedIndex: 2, mod: TOTAL_RATE, op: "GE", value1: startRate, probability, totalSeedOffset: currentOffset });
+                        checks.push({ seedIndex: raritySeedIndex, mod: TOTAL_RATE, op: "GE", value1: startRate, probability, totalSeedOffset: currentOffset });
                     }
                 }
 
-                // アイテムID判定(S3)のチェック候補
+                // アイテムID判定のチェック候補
                 const itemPool = gacha.rarityItems[rarityIdStr];
                 if (itemPool && itemPool.length > 1) {
                     const targetPoolIndex = itemPool.indexOf(itemId);
                     if (targetPoolIndex !== -1) {
                         const probability = 1 / itemPool.length;
                         checks.push({
-                            seedIndex: 3, mod: itemPool.length, op: "EQ", value1: targetPoolIndex,
+                            seedIndex: itemSeedIndex, mod: itemPool.length, op: "EQ", value1: targetPoolIndex,
                             probability, totalSeedOffset: currentOffset
                         });
                     }
                 }
-                cumulativeSeedOffset += 3; // 通常アイテムはSEEDを3消費
+                cumulativeSeedOffset += isCompleted ? 2 : 3; // コンプ済みは2、未コンプは3消費
             }
         }
 
@@ -559,6 +581,7 @@
         }
 
         // --- 要素取得 ---
+        const completionStateSelect = document.getElementById('completionState');
         const seekerTableContainer = document.getElementById('seeker-table-container');
         const partialSearchButton = document.getElementById('partialSearchButton'); // 近接検索（部分）
         const fullCounterSearchButton = document.getElementById('fullCounterSearchButton'); // 全件検索（連番）
@@ -592,19 +615,19 @@
         // 【統合・修正】プルダウンリスト/ラジオボタンのオプションを生成・設定する関数
         const updateInputOptions = (inputMethod) => {
             const gacha = gachaMaster[currentGachaId];
-            if (!gacha) return; // ガチャが未選択またはデータがない場合はスキップ
+            if (!gacha) return;
+
+            const completionState = getCompletionState();
+            const isCompleted = completionState === 'completed';
 
             const sortedItems = gacha.pool.map(id => ({ id, ...itemMaster[id] })).sort((a, b) => itemMaster[a.id].rarity - itemMaster[b.id].rarity);
 
-            // 全ての選択肢を生成 (HTML文字列)
-            const baseOptions = [
-                { value: 'placeholder', name: '--- 未選択 ---' }, // プルダウン用
-                { value: '目玉', name: '目玉' },
-                { value: '目玉(確定)', name: '目玉(確定)' },
+            let baseOptions = [
+                { value: 'placeholder', name: '--- 未選択 ---' },
+                ...(!isCompleted ? [{ value: '目玉', name: '目玉' }, { value: '目玉(確定)', name: '目玉(確定)' }] : []),
                 ...sortedItems.map(({ name }) => ({ value: name, name: name }))
             ];
-            
-            // 1回目用の選択肢を生成 (レアリティ1(レア被り)と目玉、目玉(確定)は選択不可)
+
             const firstRollOptions = [
                 { value: 'placeholder', name: '--- 未選択 ---' }, 
                 ...sortedItems.filter(({ rarity }) => rarity !== 1).map(({ name }) => ({ value: name, name: name }))
@@ -613,12 +636,10 @@
             for (let i = 0; i < 16; i++) {
                 const rollNum = i + 1;
                 
-                // ラジオボタンの選択肢に「--- 未選択 ---」を先頭に追加
                 const radioInitialOption = { value: '', name: '--- 未選択 ---' }; 
                 
-                // 1回目 (i === 0) のラジオボタンから目玉(確定)も除外
                 const radioOptionsToUse = (i === 0) 
-                    ? [radioInitialOption, ...firstRollOptions.filter(opt => opt.value !== 'placeholder' && opt.value !== '目玉' && opt.value !== '目玉(確定)')] 
+                    ? [radioInitialOption, ...firstRollOptions.filter(opt => opt.value !== 'placeholder')] 
                     : [radioInitialOption, ...baseOptions.filter(opt => opt.value !== 'placeholder')];
 
 
@@ -626,21 +647,14 @@
                     const selectElement = document.getElementById(`item-selector-${rollNum}`);
                     if (selectElement) {
                         let html = '';
-                        // 1回目以外は目玉、目玉(確定)を追加
-                        if (rollNum > 1) { 
-                            ['目玉', '目玉(確定)'].forEach(name => {
-                                html += `<option value="${name}">${name}</option>`;
-                            });
-                        }
-                        
-                        // 通常アイテム
-                        const optionsToUse = (rollNum === 1) ? firstRollOptions.filter(opt => opt.value !== 'placeholder' && opt.value !== '目玉' && opt.value !== '目玉(確定)') : sortedItems.map(({ name }) => ({ value: name, name: name }));
+                        const optionsToUse = (rollNum === 1) ? firstRollOptions : baseOptions;
+
                         optionsToUse.forEach(opt => {
-                             html += `<option value="${opt.value}">${opt.name}</option>`;
+                            if (rollNum === 1 && (opt.value === '目玉' || opt.value === '目玉(確定)')) return;
+                            html += `<option value=\"${opt.value}\">${opt.name}</option>`;
                         });
                         
-                        selectElement.innerHTML = `<option value="placeholder">--- 未選択 ---</option>` + html;
-                        // 以前の選択状態を復元 (URLからの読み込み時)
+                        selectElement.innerHTML = html;
                         const storedValue = selectElement.getAttribute('data-stored-value') || 'placeholder';
                         selectElement.value = storedValue;
                         selectElement.closest('tr').classList.toggle('selected-row', storedValue !== 'placeholder');
@@ -751,6 +765,7 @@
             if (!gacha) { alert('ガチャの種類をクエリパラメータで指定してください。'); return; } // 安全対策
             const stopOnFound = stopOnFoundCheckbox.checked;
             const currentInputMethod = getCurrentInputMethod(); 
+            const completionState = getCompletionState();
             
             // 共通の入力チェックとシーケンス取得
             const targetSequenceNames = []; 
@@ -807,7 +822,7 @@
             }
 
             // --- 【修正点2】早期離脱条件（priorityChecks）の生成 ---
-            const priorityChecks = createPriorityChecks(targetItemIdsForWorker, gacha);
+            const priorityChecks = createPriorityChecks(targetItemIdsForWorker, gacha, completionState);
 
             let startSeedValue = startSeedInput.value.trim();
             // Start Seedがない場合は、XORSHIFT順では1、カウンター式では0から開始 (ワーカー側の+1で調整)
@@ -1152,7 +1167,8 @@
                         priorityChecks: priorityChecks, // 早期離脱条件
                         gachaData: gacha,
                         stopOnFound: stopOnFound,
-                        searchMode: mode 
+                        searchMode: mode,
+                        completionState: completionState
                     });
                 }
                 if (numWorkers === workersFinished) resetUI('検索範囲が0のため、処理は行われませんでした。');
@@ -1195,6 +1211,11 @@
             });
         });
 
+        completionStateSelect.addEventListener('change', () => {
+            updateInputOptions(getCurrentInputMethod());
+            updateUrl();
+        });
+
         startSeedInput.addEventListener('input', updateUrl);
 
         
@@ -1217,6 +1238,11 @@
         const urlStartSeed = params.get('startSeed');
         const urlSequence = params.get('seq');
         const urlInputMethod = params.get('inputMethod') || INPUT_METHOD_SELECT; 
+        const urlCompleted = params.get('completed');
+
+        if (urlCompleted === '1') {
+            completionStateSelect.value = 'completed';
+        }
         
         // Input Method設定
         const methodRadio = document.getElementById(`method-${urlInputMethod}`);
