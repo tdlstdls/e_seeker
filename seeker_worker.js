@@ -213,10 +213,11 @@ function performRareSalvageForwardSearch(initialStartSeed, count, targetItemIds,
         }
 
         if (isSeedValid) {
-            if (rareSalvageForwardVerification(currentSeedToTest, targetItemIds, completionState)) {
-                postMessage({ type: 'found', seed: currentSeedToTest, workerIndex });
+            const verificationResult = rareSalvageForwardVerification(currentSeedToTest, targetItemIds, completionState);
+            if (verificationResult.verified) {
+                postMessage({ type: 'found', seed: currentSeedToTest, workerIndex, lr: verificationResult.dupedItemId });
                 if (stopOnFound) {
-                    postMessage({ type: 'stop_found', seed: currentSeedToTest, finalSeed: currentSeedToTest, workerIndex, processed: processedCount });
+                    postMessage({ type: 'stop_found', seed: currentSeedToTest, finalSeed: currentSeedToTest, workerIndex, processed: processedCount, lr: verificationResult.dupedItemId });
                     return;
                 }
             }
@@ -290,7 +291,7 @@ function rareSalvageForwardVerification(startSeed, targetItemIds, completionStat
         const s1 = xorshift32_js(currentSeed);
         currentSeed = s1;
         consumedCount++;
-        if ((s1 % 10000) < gachaData.featuredItemRate) return false;
+        if ((s1 % 10000) < gachaData.featuredItemRate) return { verified: false };
     }
 
     const s2 = xorshift32_js(currentSeed);
@@ -302,13 +303,13 @@ function rareSalvageForwardVerification(startSeed, targetItemIds, completionStat
     for (let i = 0; i < cumulativeRates.length; i++) {
         if (rarityVal < cumulativeRates[i]) { rarityId = i; break; }
     }
-    if (rarityId !== 1) return false;
+    if (rarityId !== 1) return { verified: false };
 
     const s3 = xorshift32_js(currentSeed);
     currentSeed = s3;
     consumedCount++;
     const itemPool = gachaData.rarityItems['1'];
-    if (!itemPool || itemPool.length < 2) return false;
+    if (!itemPool || itemPool.length < 2) return { verified: false };
     
     const dupedItemId = itemPool[s3 % itemPool.length]; 
     
@@ -317,22 +318,22 @@ function rareSalvageForwardVerification(startSeed, targetItemIds, completionStat
     consumedCount++;
 
     const filteredPool = itemPool.filter(id => id !== dupedItemId);
-    if (filteredPool.length === 0) return false; 
+    if (filteredPool.length === 0) return { verified: false }; 
     
     const rerolledItemId = filteredPool[s4 % filteredPool.length]; 
 
     if (rerolledItemId !== firstTargetItemId) {
-        return false; 
+        return { verified: false }; 
     }
     
     const remainingTargetIds = targetItemIds.slice(1);
     if (remainingTargetIds.length > 0) {
         if (!fullForwardVerification(currentSeed, remainingTargetIds, completionState, rerolledItemId)) {
-            return false;
+            return { verified: false };
         }
     }
 
-    return true;
+    return { verified: true, dupedItemId: dupedItemId };
 }
 
 function performRareSalvageSearch(initialPrioritySeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, completionState) {
@@ -358,10 +359,11 @@ function performRareSalvageSearch(initialPrioritySeed, count, targetItemIds, pri
                 startSeedCandidate = inverse_xorshift32_js(startSeedCandidate);
             }
 
-            if (rareSalvageForwardVerification(startSeedCandidate, targetItemIds, completionState)) {
-                postMessage({ type: 'found', seed: startSeedCandidate, workerIndex });
+            const verificationResult = rareSalvageForwardVerification(startSeedCandidate, targetItemIds, completionState);
+            if (verificationResult.verified) {
+                postMessage({ type: 'found', seed: startSeedCandidate, workerIndex, lr: verificationResult.dupedItemId });
                 if (stopOnFound) {
-                    postMessage({ type: 'stop_found', seed: startSeedCandidate, finalSeed: startSeedCandidate, workerIndex, processed: processedCount });
+                    postMessage({ type: 'stop_found', seed: startSeedCandidate, finalSeed: startSeedCandidate, workerIndex, processed: processedCount, lr: verificationResult.dupedItemId });
                     return;
                 }
             }

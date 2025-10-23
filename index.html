@@ -208,6 +208,11 @@
             </div>
         </div>
         <ul id="results-area"></ul>
+        <div id="seed-results-note" class="note" style="display: none; font-weight: bold; color: #dc3545; margin-top: 10px;">
+            このSEEDは上記のガチャ検索結果を回す「前」のSEEDです<br>
+            したがって、「ロールズで確認」で表示したページでは、1行目は次にガチャを回すと出るアイテム「ではなく」、上記の入力された1回目のアイテムになります<br>
+            上記のガチャ結果を確認の上、「続き」からご使用ください
+        </div>
         <p id="found-limit-message" style="display: none; font-size: 0.9rem; color: #dc3545; font-weight: bold; margin-top: 10px;">
             ※発見SEEDの表示は、処理速度確保のため最初の20件までに制限されています。
         </p>
@@ -603,7 +608,7 @@
         const etaDisplay = document.getElementById('eta-display');
         const inputMethodRadios = document.querySelectorAll('input[name="input_method_radio"]');
         const foundLimitMessage = document.getElementById('found-limit-message');
-
+        const seedResultsNote = document.getElementById('seed-results-note'); // 追加
 
         // --- 探索ロジック変数 ---
         let activeWorkers = [];
@@ -778,8 +783,9 @@
             stopButton.style.display = 'none';
             progressContainer.style.display = 'none';
             foundLimitMessage.style.display = foundCount > MAX_DISPLAY_COUNT ? 'block' : 'none';
+            seedResultsNote.style.display = foundCount > 0 ? 'block' : 'none'; // 検索結果が1件でもあれば表示
             startSeedNote.textContent = '過去の SEED が分かれば、そのSEEDに続くSEEDを検索します。全件検索ではないため、近接した範囲内にSEEDがない場合は見つけることが出来ません。';
-            if (message) statusEl.textContent = message;
+            if (message) statusEl.innerHTML = message;
             terminateAllWorkers();
         };
 
@@ -796,6 +802,7 @@
                 foundSeeds.clear();
                 resultsArea.innerHTML = '';
                 foundLimitMessage.style.display = 'none';
+                seedResultsNote.style.display = 'none'; // 検索開始時に非表示
                 worker0Progress = 0;
                 finalSearchedSeed = null;
             }
@@ -934,24 +941,42 @@
             let searchEndedByFound = false;
 
             const workerMessageHandler = (e) => {
-                const { type, seed, processed, finalSeed, workerIndex } = e.data;
+                const { type, seed, processed, finalSeed, workerIndex, lr } = e.data;
 
                 if (searchEndedByFound) {
                     e.target.terminate();
                     return;
                 }
 
-                if (type === 'found') {
-                    if (foundSeeds.has(seed)) return;
-                    foundSeeds.add(seed);
+                const handleFoundSeed = (foundSeed, foundLr) => {
+                    if (foundSeeds.has(foundSeed)) return;
+                    foundSeeds.add(foundSeed);
                     foundCount++;
+
                     if (foundCount <= MAX_DISPLAY_COUNT) {
                         const li = document.createElement('li');
-                        li.textContent = `SEED発見: ${seed}`;
+                        const gachaId = currentGachaId;
+                        const completionState = getCompletionState();
+                        const isCompleted = completionState === 'completed';
+                        
+                        let url = `https://tdlstdls.github.io/e_rolls/?gacha=${gachaId}&seed=${foundSeed}`;
+                        if (foundLr !== undefined) {
+                            url += `&lr=${foundLr}`;
+                        }
+                        if (isCompleted) {
+                            url += `&comp=true`;
+                        }
+                        
+                        // 注釈の表示を削除し、リンクのみにする
+                        li.innerHTML = `SEED発見: ${foundSeed} <a href="${url}" target="_blank">ロールズで確認</a>`;
                         resultsArea.appendChild(li);
                     } else if (foundCount === MAX_DISPLAY_COUNT + 1) {
                         foundLimitMessage.style.display = 'block';
                     }
+                };
+                        
+                if (type === 'found') {
+                    handleFoundSeed(seed, lr);
                 } else if (type === 'progress') {
                     searchTracking.processedByWorker[workerIndex] += processed;
                     const totalProcessed = searchTracking.processedByWorker.reduce((sum, val) => sum + val, 0);
@@ -970,6 +995,7 @@
                     }
                 } else if (type === 'stop_found') {
                     searchEndedByFound = true;
+                    handleFoundSeed(seed, e.data.lr); // Display the found seed in the list
                     const duration = performance.now() - startTime;
                     resetUI(`探索完了: SEED ${seed} が見つかりました。(${formatShortDuration(duration)})`);
                     if (baseMode === 'partial_xorshift') {
