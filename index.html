@@ -221,7 +221,7 @@
 </div>
 
 <script>
-    // --- マスターデータ (既存のシミュレーターから流用) ---
+// --- マスターデータ (既存のシミュレーターから流用) ---
     const gachaMaster = {
         '42': {
             name: '1.1億DL記念',
@@ -428,11 +428,12 @@
                 const selectElement = document.getElementById(`item-selector-${i + 1}`);
                 if (selectElement) value = selectElement.value;
             } else { // radio (INPUT_METHOD_RADIO)
-                const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
-                value = checkedRadio ? checkedRadio.value : ''; 
+                // data-stored-valueから値を取得
+                const radioDiv = document.getElementById(`radio-container-${i + 1}`);
+                value = radioDiv ? radioDiv.getAttribute('data-stored-value') : ''; 
             }
 
-            if (value !== 'placeholder' && value !== '') {
+            if (value !== 'placeholder' && value !== '' && value !== null) {
                 if (value === '目玉') sequence.push('f');
                 else if (value === '目玉(確定)') sequence.push('gf');
                 else {
@@ -580,6 +581,32 @@
         return [bestCheck]; // 最も安全で効果的なチェックを1つだけ返す
     }
 
+    /**
+     * 現在の入力形式（SELECTまたはRADIO）からシーケンスを取得する
+     * @param {string} currentMethod - 現在の入力形式 ('0' or '1')
+     * @returns {Array<string>} アイテム名の配列
+     */
+    function getCurrentSequenceNames(currentMethod) {
+        const sequence = [];
+        for (let i = 0; i < 16; i++) {
+            let value = 'placeholder';
+            if (currentMethod === INPUT_METHOD_SELECT) {
+                const selectElement = document.getElementById(`item-selector-${i + 1}`);
+                if (selectElement) value = selectElement.value;
+            } else { // radio (INPUT_METHOD_RADIO)
+                const radioDiv = document.getElementById(`radio-container-${i + 1}`);
+                value = radioDiv ? radioDiv.getAttribute('data-stored-value') : ''; 
+            }
+
+            if (value !== 'placeholder' && value !== '' && value !== null) {
+                sequence.push(value);
+            } else {
+                break; // 未選択/placeholder/空文字の場合はシーケンスの入力終了とみなす
+            }
+        }
+        return sequence;
+    }
+
 
     document.addEventListener('DOMContentLoaded', () => {
         // --- URLからの初期化 ---
@@ -622,7 +649,7 @@
         
         
         // 【統合・修正】プルダウンリスト/ラジオボタンのオプションを生成・設定する関数
-        const updateInputOptions = (inputMethod) => {
+        const updateInputOptions = (inputMethod, sequenceNames = []) => {
             const gacha = gachaMaster[currentGachaId];
             if (!gacha) return;
 
@@ -644,6 +671,7 @@
             
             for (let i = 0; i < 16; i++) {
                 const rollNum = i + 1;
+                const storedValue = sequenceNames[i] || null; // 渡されたシーケンスがあればその値を優先
                 
                 const radioInitialOption = { value: '', name: '--- 未選択 ---' }; 
                 
@@ -664,24 +692,38 @@
                         });
                         
                         selectElement.innerHTML = html;
-                        const storedValue = selectElement.getAttribute('data-stored-value') || 'placeholder';
-                        selectElement.value = storedValue;
-                        selectElement.closest('tr').classList.toggle('selected-row', storedValue !== 'placeholder');
-                        selectElement.setAttribute('data-stored-value', selectElement.value); 
+                        
+                        const valueToSet = storedValue || 'placeholder';
+                        const optionExists = Array.from(selectElement.options).some(option => option.value === valueToSet);
+
+                        if (optionExists) {
+                            selectElement.value = valueToSet;
+                            selectElement.setAttribute('data-stored-value', valueToSet); 
+                        } else {
+                            selectElement.value = 'placeholder';
+                            selectElement.setAttribute('data-stored-value', 'placeholder');
+                        }
+
+                        selectElement.closest('tr').classList.toggle('selected-row', selectElement.value !== 'placeholder');
                     }
                 } else { // radio (INPUT_METHOD_RADIO)
                     const radioDiv = document.getElementById(`radio-container-${rollNum}`);
                     if (radioDiv) {
                         let html = '';
+                        const valueToSet = storedValue || '';
+                        
+                        // data-stored-value を更新して、ラジオボタンの初期選択に使う
+                        radioDiv.setAttribute('data-stored-value', valueToSet); 
+
                         radioOptionsToUse.forEach(opt => {
-                            const isChecked = radioDiv.getAttribute('data-stored-value') === opt.value ? 'checked' : '';
+                            const isChecked = opt.value === valueToSet ? 'checked' : '';
                             const isDisabled = (rollNum === 1 && (opt.value === '目玉' || opt.value === '目玉(確定)')); 
                             const disabledAttr = isDisabled ? 'disabled' : '';
 
                             const inputName = `seeker-roll-${rollNum}`;
                             const isPlaceholderOption = opt.value === ''; 
-                            const isInitialState = isPlaceholderOption && !radioDiv.getAttribute('data-stored-value');
-                            
+                            const isInitialState = isPlaceholderOption && valueToSet === ''; // 値がない場合は未選択を初期チェック
+
                             html += `
                                 <label>
                                     <input type="radio" name="${inputName}" value="${opt.value}" ${isChecked || isInitialState ? 'checked' : ''} ${disabledAttr}>
@@ -703,11 +745,10 @@
                             });
                         });
 
-                        const storedValue = radioDiv.getAttribute('data-stored-value');
-                        const isSelected = storedValue !== '' && storedValue !== null;
+                        const isSelected = valueToSet !== '';
                         radioDiv.closest('tr').classList.toggle('selected-row', isSelected);
                         
-                        if (!storedValue) {
+                        if (!valueToSet) {
                              const unselectedRadio = document.querySelector(`input[name="seeker-roll-${rollNum}"][value=""]`);
                              if (unselectedRadio) unselectedRadio.checked = true;
                         }
@@ -719,7 +760,7 @@
 
 
         // 【修正】入力形式に応じてテーブル構造を生成・切り替え
-        const createSeekerTable = (inputMethod) => {
+        const createSeekerTable = (inputMethod, sequenceNames = []) => {
             const table = document.createElement('table');
             table.className = 'seeker-table';
             table.innerHTML = `<thead><tr><th>回数</th><th>選択アイテム</th></tr></thead><tbody></tbody>`;
@@ -728,11 +769,14 @@
             for (let i = 0; i < 16; i++) {
                 const row = document.createElement('tr');
                 let cellContent;
+                const valueForDataAttr = sequenceNames[i] || (inputMethod === INPUT_METHOD_SELECT ? 'placeholder' : '');
 
                 if (inputMethod === INPUT_METHOD_SELECT) {
-                    cellContent = `<td><select id="item-selector-${i + 1}" class="select-item-selector"></select>`;
+                    // selectタグにdata-stored-valueを直接設定
+                    cellContent = `<td><select id="item-selector-${i + 1}" class="select-item-selector" data-stored-value="${valueForDataAttr}"></select>`;
                 } else { // radio
-                    cellContent = `<td><div id="radio-container-${i + 1}" class="radio-options"></div>`;
+                    // divにdata-stored-valueを設定
+                    cellContent = `<td><div id="radio-container-${i + 1}" class="radio-options" data-stored-value="${valueForDataAttr}"></div>`;
                 }
 
                 // 1回目のセルにだけ注釈用divを追加
@@ -749,7 +793,7 @@
             seekerTableContainer.innerHTML = '';
             seekerTableContainer.appendChild(table);
 
-            updateInputOptions(inputMethod);
+            updateInputOptions(inputMethod, sequenceNames);
             
             if (inputMethod === INPUT_METHOD_SELECT) {
                 for (let i = 0; i < 16; i++) {
@@ -820,26 +864,7 @@
             const currentInputMethod = getCurrentInputMethod();
             const completionState = getCompletionState();
 
-            const targetSequenceNames = [];
-            for (let i = 0; i < 16; i++) {
-                let value = '';
-                if (currentInputMethod === INPUT_METHOD_SELECT) {
-                    const selectElement = document.getElementById(`item-selector-${i + 1}`);
-                    if (selectElement && selectElement.value !== 'placeholder') {
-                        value = selectElement.value;
-                    }
-                } else {
-                    const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
-                    if (checkedRadio && checkedRadio.value !== '') {
-                        value = checkedRadio.value;
-                    }
-                }
-                if (value !== '') {
-                    targetSequenceNames.push(value);
-                } else {
-                    break;
-                }
-            }
+            const targetSequenceNames = getCurrentSequenceNames(currentInputMethod);
 
             if (targetSequenceNames.length < 7 && !targetSequenceNames.includes('目玉(確定)')) {
                 alert('検索を行うには、最低7回分のガチャ結果を入力してください。');
@@ -1145,16 +1170,28 @@
             updateRareItemsNote();
         });
         
+        // ★修正点: 入力形式切り替え時にシーケンスを保持するロジックを追加
         inputMethodRadios.forEach(radio => {
             radio.addEventListener('change', (event) => {
                 const newMethod = event.target.value; 
-                createSeekerTable(newMethod);
+                const oldMethod = (newMethod === INPUT_METHOD_SELECT) ? INPUT_METHOD_RADIO : INPUT_METHOD_SELECT;
+
+                // 1. 現在のシーケンスを一時的に保持
+                const currentSequenceNames = getCurrentSequenceNames(oldMethod);
+
+                // 2. 新しい形式でテーブルを再生成し、保持したシーケンスを反映
+                createSeekerTable(newMethod, currentSequenceNames);
+                
+                // 3. URLを更新 (新しい形式でシーケンスが正しく読み込まれる)
                 updateUrl(newMethod);
             });
         });
 
         completionStateSelect.addEventListener('change', () => {
-            updateInputOptions(getCurrentInputMethod());
+            // ガチャの状態が変わった時は、現在の入力形式でオプションを更新し、URLも更新
+            const currentMethod = getCurrentInputMethod();
+            const currentSequenceNames = getCurrentSequenceNames(currentMethod); // 現在のUIから値を取得
+            updateInputOptions(currentMethod, currentSequenceNames); // オプション更新
             updateRareItemsNote();
             updateUrl();
         });
@@ -1185,46 +1222,27 @@
         const methodRadio = document.getElementById(`method-${urlInputMethod}`);
         if (methodRadio) methodRadio.checked = true; else document.getElementById(`method-${INPUT_METHOD_SELECT}`).checked = true; 
         
-        // Table生成とオプション更新 (この時点でガチャが選択されているため、アイテムリストが生成される)
-        createSeekerTable(urlInputMethod);
+        // URLのseqパラメータからシーケンスアイテム名を復元
+        let initialSequenceNames = [];
+        if (urlSequence) {
+            const sequenceIds = urlSequence.split('-');
+            initialSequenceNames = sequenceIds.map(idOrSpecial => {
+                if (idOrSpecial === 'f') return '目玉';
+                else if (idOrSpecial === 'gf') return '目玉(確定)';
+                else if (itemMaster[idOrSpecial]) return itemMaster[idOrSpecial].name;
+                return null; // 不明なアイテム
+            }).filter(name => name !== null);
+        }
+        
+        // Table生成とオプション更新 (復元したシーケンス名を渡す)
+        createSeekerTable(urlInputMethod, initialSequenceNames);
         
         if (urlStartSeed) startSeedInput.value = urlStartSeed; else startSeedInput.value = '';
 
+        // URLにシーケンスが設定されていれば、createSeekerTable内で既にUIに反映され、
+        // data-stored-valueにも格納されているため、改めてUI操作をする必要はない。
         
-        // Sequence値設定
-        if (urlSequence) {
-            const sequenceIds = urlSequence.split('-');
-            sequenceIds.forEach((idOrSpecial, index) => {
-                let itemName;
-                if (idOrSpecial === 'f') itemName = '目玉';
-                else if (idOrSpecial === 'gf') itemName = '目玉(確定)';
-                else if (itemMaster[idOrSpecial]) itemName = itemMaster[idOrSpecial].name;
-                
-                if (itemName) {
-                    const rollNum = index + 1;
-                    if (urlInputMethod === INPUT_METHOD_SELECT) {
-                        const selectElement = document.getElementById(`item-selector-${rollNum}`);
-                        if (selectElement) { 
-                            const optionExists = Array.from(selectElement.options).some(option => option.value === itemName);
-                            if(optionExists) {
-                                selectElement.value = itemName;
-                                selectElement.closest('tr').classList.add('selected-row'); 
-                                selectElement.setAttribute('data-stored-value', itemName);
-                            }
-                        }
-                    } else { // radio
-                        const radioDiv = document.getElementById(`radio-container-${rollNum}`);
-                        const radio = document.querySelector(`input[name="seeker-roll-${rollNum}"][value="${itemName}"]`);
-                        if (radio) {
-                            radio.checked = true;
-                            radioDiv.closest('tr').classList.add('selected-row'); 
-                            radioDiv.setAttribute('data-stored-value', itemName);
-                        }
-                    }
-                }
-            });
-        }
-        
+        // 初期化時のURL更新 (UIの状態を最終的にURLに反映)
         updateUrl();
 
         // --- レアアイテムリストの動的表示 ---
@@ -1257,8 +1275,8 @@
                     const select = document.getElementById('item-selector-1');
                     if (select) firstRollValue = select.value;
                 } else {
-                    const radio = document.querySelector('input[name="seeker-roll-1"]:checked');
-                    if (radio) firstRollValue = radio.value;
+                    const radioDiv = document.getElementById('radio-container-1');
+                    if (radioDiv) firstRollValue = radioDiv.getAttribute('data-stored-value');
                 }
 
                 const itemId = itemNameMap[firstRollValue];
@@ -1266,16 +1284,15 @@
 
                 if (isRare) {
                     const fixText = 'ただし、直前ににゃんこガチャを１回回すとレア被りが起こらなくなります';
-                    const checkboxHtml = `<label style="font-weight: normal; display: block; margin-top: 3px;"><input type="checkbox" id="nyanko-gacha-fix" style="width: auto; vertical-align: middle; margin-right: 3px;">直前ににゃんこガチャを１回回している (ここにチェックを入れるとレア被りを考慮した再検索を行いません)</label>`;
+                    // チェックボックスの状態をURLパラメータから復元
+                    const params = new URLSearchParams(window.location.search);
+                    const isChecked = params.get('nyanko_fix') === '1' ? 'checked' : '';
+
+                    const checkboxHtml = `<label style="font-weight: normal; display: block; margin-top: 3px;"><input type="checkbox" id="nyanko-gacha-fix" style="width: auto; vertical-align: middle; margin-right: 3px;" ${isChecked}>直前ににゃんこガチャを１回回している(ここにチェックを入れるとレア被りを考慮した再検索を行いません)</label>`;
                     firstRollNoteElement.innerHTML = `${line2}<br>${fixText}${checkboxHtml}`;
                     
                     const nyankoFixCheckbox = document.getElementById('nyanko-gacha-fix');
                     if (nyankoFixCheckbox) {
-                        // URLパラメータから状態を復元
-                        const params = new URLSearchParams(window.location.search);
-                        if (params.get('nyanko_fix') === '1') {
-                            nyankoFixCheckbox.checked = true;
-                        }
                         // イベントリスナーを追加
                         nyankoFixCheckbox.addEventListener('change', updateUrl);
                     }
