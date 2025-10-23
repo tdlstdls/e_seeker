@@ -1,4 +1,3 @@
-<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -171,8 +170,6 @@
         <div id="seeker-table-container">
         </div>
         <p class="note" style="color: red; font-weight: bold;">
-            １回目はレア被りの可能性のあるアイテム及び目玉、目玉(確定)は選択できません<br>
-            目玉と目玉(確定)を区別して入力してください
         </p>
     </div>
 
@@ -410,6 +407,13 @@
         } else {
             params.delete('startSeed');
         }
+
+        const nyankoFixCheckbox = document.getElementById('nyanko-gacha-fix');
+        if (nyankoFixCheckbox && nyankoFixCheckbox.checked) {
+            params.set('nyanko_fix', '1');
+        } else {
+            params.delete('nyanko_fix');
+        }
         
         // シーケンスの取得ロジック
         const sequence = [];
@@ -480,7 +484,7 @@
 
 
     // --- 【更新】早期離脱条件（priorityChecks）生成関数 ---
-    function createPriorityChecks(filteredSequence, gacha, completionState) {
+    function createPriorityChecks(filteredSequence, gacha, completionState, searchMode) {
         const checks = [];
         const TOTAL_RATE = 10000;
         const isCompleted = completionState === 'completed';
@@ -606,7 +610,6 @@
         let isSearching = false;
         let foundCount = 0;
         let foundSeeds = new Set(); 
-        let searchMode = 'partial_xorshift'; // 初期値
         let finalSearchedSeed = null; 
         let worker0Progress = 0;
         const MAX_DISPLAY_COUNT = 20; 
@@ -630,7 +633,7 @@
 
             const firstRollOptions = [
                 { value: 'placeholder', name: '--- 未選択 ---' }, 
-                ...sortedItems.filter(({ rarity }) => rarity !== 1).map(({ name }) => ({ value: name, name: name }))
+                ...sortedItems.map(({ name }) => ({ value: name, name: name }))
             ];
             
             for (let i = 0; i < 16; i++) {
@@ -651,7 +654,7 @@
 
                         optionsToUse.forEach(opt => {
                             if (rollNum === 1 && (opt.value === '目玉' || opt.value === '目玉(確定)')) return;
-                            html += `<option value=\"${opt.value}\">${opt.name}</option>`;
+                            html += `<option value="${opt.value}">${opt.name}</option>`;
                         });
                         
                         selectElement.innerHTML = html;
@@ -688,6 +691,9 @@
                                 event.target.closest('tr').classList.toggle('selected-row', isSelected);
                                 radioDiv.setAttribute('data-stored-value', event.target.value); 
                                 updateUrl();
+                                if (rollNum === 1) {
+                                    updateRareItemsNote();
+                                }
                             });
                         });
 
@@ -718,10 +724,17 @@
                 let cellContent;
 
                 if (inputMethod === INPUT_METHOD_SELECT) {
-                    cellContent = `<td><select id="item-selector-${i + 1}" class="select-item-selector"></select></td>`;
+                    cellContent = `<td><select id="item-selector-${i + 1}" class="select-item-selector"></select>`;
                 } else { // radio
-                    cellContent = `<td><div id="radio-container-${i + 1}" class="radio-options"></div></td>`;
+                    cellContent = `<td><div id="radio-container-${i + 1}" class="radio-options"></div>`;
                 }
+
+                // 1回目のセルにだけ注釈用divを追加
+                if (i === 0) {
+                    cellContent += `<div id="first-roll-note" class="note" style="color: red; font-weight: bold; margin-top: 5px;"></div>`;
+                }
+
+                cellContent += `</td>`;
                 
                 row.innerHTML = `<td>${i + 1}回目</td>${cellContent}`;
                 tbody.appendChild(row);
@@ -740,6 +753,9 @@
                             event.target.closest('tr').classList.toggle('selected-row', event.target.value !== 'placeholder');
                             event.target.setAttribute('data-stored-value', event.target.value); 
                             updateUrl();
+                            if (event.target.id === 'item-selector-1') {
+                                updateRareItemsNote();
+                            }
                         });
                     }
                 }
@@ -747,28 +763,55 @@
 
         };
 
-        // --- 【修正】検索実行関数: 目玉(確定)の除外、数値ID化、priorityChecksの生成を実装 ---
-        const executeSearch = async (mode) => {
-            if (isSearching) return;
+        const terminateAllWorkers = () => {
+            activeWorkers.forEach(worker => worker.terminate());
+            activeWorkers = [];
+        };
 
-            searchMode = mode; // 検索モードを設定
-            foundCount = 0;
-            foundSeeds.clear(); 
-            searchEndedByFound = false; 
-            finalSearchedSeed = null;
-            resultsArea.innerHTML = '';
-            foundLimitMessage.style.display = 'none';
-            worker0Progress = 0;
+        const resetUI = (message) => {
+            isSearching = false;
+            fullCounterSearchButton.disabled = false;
+            partialSearchButton.disabled = false;
+            fullCounterSearchButton.textContent = '全件検索';
+            partialSearchButton.textContent = '近接検索（部分）';
+            clearButton.classList.remove('hidden-control');
+            stopButton.style.display = 'none';
+            progressContainer.style.display = 'none';
+            foundLimitMessage.style.display = foundCount > MAX_DISPLAY_COUNT ? 'block' : 'none';
+            startSeedNote.textContent = '過去の SEED が分かれば、そのSEEDに続くSEEDを検索します。全件検索ではないため、近接した範囲内にSEEDがない場合は見つけることが出来ません。';
+            if (message) statusEl.textContent = message;
+            terminateAllWorkers();
+        };
+
+        const executeSearch = async (baseMode, overrideSearchMode = null) => {
+            if (isSearching && !overrideSearchMode) {
+                return;
+            }
+
+            const searchMode = overrideSearchMode || baseMode;
+
+            if (!overrideSearchMode) {
+                isSearching = true;
+                foundCount = 0;
+                foundSeeds.clear();
+                resultsArea.innerHTML = '';
+                foundLimitMessage.style.display = 'none';
+                worker0Progress = 0;
+                finalSearchedSeed = null;
+            }
 
             const gachaId = currentGachaId;
-            const gacha = gachaMaster[gachaId]; 
-            if (!gacha) { alert('ガチャの種類をクエリパラメータで指定してください。'); return; } // 安全対策
+            const gacha = gachaMaster[gachaId];
+            if (!gacha) {
+                alert('ガチャの種類をクエリパラメータで指定してください。');
+                isSearching = false;
+                return;
+            }
             const stopOnFound = stopOnFoundCheckbox.checked;
-            const currentInputMethod = getCurrentInputMethod(); 
+            const currentInputMethod = getCurrentInputMethod();
             const completionState = getCompletionState();
-            
-            // 共通の入力チェックとシーケンス取得
-            const targetSequenceNames = []; 
+
+            const targetSequenceNames = [];
             for (let i = 0; i < 16; i++) {
                 let value = '';
                 if (currentInputMethod === INPUT_METHOD_SELECT) {
@@ -776,121 +819,107 @@
                     if (selectElement && selectElement.value !== 'placeholder') {
                         value = selectElement.value;
                     }
-                } else { // radio
-                     const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
+                } else {
+                    const checkedRadio = document.querySelector(`input[name="seeker-roll-${i + 1}"]:checked`);
                     if (checkedRadio && checkedRadio.value !== '') {
                         value = checkedRadio.value;
                     }
                 }
-
                 if (value !== '') {
                     targetSequenceNames.push(value);
                 } else {
                     break;
                 }
             }
-            
-            const hasGuaranteedFeatured = targetSequenceNames.includes('目玉(確定)');
-            if (hasGuaranteedFeatured) {
-                if (targetSequenceNames.length < 8) { alert('目玉(確定)が含まれる場合は、最低8回分のガチャ結果を入力してください。'); return; }
-            } else {
-                if (targetSequenceNames.length < 7) { 
-                    alert('検索を行うには、最低7回分のガチャ結果を入力してください。'); return;
-                }
+
+            if (targetSequenceNames.length < 7 && !targetSequenceNames.includes('目玉(確定)')) {
+                alert('検索を行うには、最低7回分のガチャ結果を入力してください。');
+                isSearching = false;
+                return;
             }
-            
-            // --- 【修正点1】目玉(確定)の除外と数値ID/コードへの変換 ---
+            if (targetSequenceNames.includes('目玉(確定)') && targetSequenceNames.length < 8) {
+                alert('目玉(確定)が含まれる場合は、最低8回分のガチャ結果を入力してください。');
+                isSearching = false;
+                return;
+            }
+
             const targetItemIdsForWorker = [];
             for (const targetItemName of targetSequenceNames) {
-                if (targetItemName === '目玉(確定)') {
-                    // 目玉(確定)はワーカーに渡さず、メインスレッドで除外する (SKIP処理の簡略化)
-                    continue;
-                } else if (targetItemName === '目玉') {
+                if (targetItemName === '目玉(確定)') continue;
+                if (targetItemName === '目玉') {
                     targetItemIdsForWorker.push(FEAT_CODE);
                 } else {
                     const targetItemId = itemNameMap[targetItemName];
                     if (targetItemId !== undefined) {
-                        targetItemIdsForWorker.push(targetItemId); // 数値IDをプッシュ
+                        targetItemIdsForWorker.push(targetItemId);
+                    } else {
+                        alert(`不明なアイテム名が選択されています: ${targetItemName}`);
+                        isSearching = false;
+                        return;
                     }
-                    else { alert(`不明なアイテム名が選択されています: ${targetItemName}`); return; }
                 }
             }
-            
+
             if (targetItemIdsForWorker.length === 0) {
-                 alert('目玉(確定)を除外した結果、シードを消費するガチャ結果が存在しません。');
-                 return;
+                alert('目玉(確定)を除外した結果、シードを消費するガチャ結果が存在しません。');
+                isSearching = false;
+                return;
             }
 
-            // --- 【修正点2】早期離脱条件（priorityChecks）の生成 ---
-            const priorityChecks = createPriorityChecks(targetItemIdsForWorker, gacha, completionState);
+            const priorityChecks = createPriorityChecks(targetItemIdsForWorker, gacha, completionState, searchMode);
 
             let startSeedValue = startSeedInput.value.trim();
-            // Start Seedがない場合は、XORSHIFT順では1、カウンター式では0から開始 (ワーカー側の+1で調整)
-            let initialStartSeed = parseInt(startSeedValue, 10) >>> 0; 
-            if (initialStartSeed === 0 && (mode === 'partial_xorshift')) initialStartSeed = 1;
-            if (mode === 'partial_xorshift') {
+            let initialStartSeed = parseInt(startSeedValue, 10) >>> 0;
+            if (initialStartSeed === 0 && (baseMode === 'partial_xorshift')) initialStartSeed = 1;
+            if (baseMode === 'partial_xorshift') {
                 partialSearchInitialSeed = initialStartSeed;
             }
-            
-            
-            const isFullSearch = (mode === 'full_counter');
-            const searchRangeValue = 100000000;
-            
-            const totalSearchRange = isFullSearch ? TOTAL_32_BIT_SPACE : searchRangeValue; 
-            
-            const numCores = navigator.hardwareConcurrency || 4;
-            const numWorkers = Math.max(1, numCores); 
-            let baseRange;
-            
-            const isCounterSearch = (mode === 'full_counter');
 
-            // カウンター式の場合は全件検索でもJump Aheadを使わないため、単純な分割にする
+            const isFullSearch = (baseMode === 'full_counter');
+            const searchRangeValue = 100000000;
+            const totalSearchRange = isFullSearch ? TOTAL_32_BIT_SPACE : searchRangeValue;
+
+            const numCores = navigator.hardwareConcurrency || 4;
+            const numWorkers = Math.max(1, numCores);
+            let baseRange;
+            const isCounterSearch = (baseMode === 'full_counter');
+
             if (isCounterSearch) {
-                 baseRange = Math.ceil(totalSearchRange / numWorkers);
+                baseRange = Math.ceil(totalSearchRange / numWorkers);
             } else {
-                 // XORSHIFT32順の場合は、Jump Aheadを使うため、baseRangeを計算
-                 baseRange = Math.ceil(totalSearchRange / numWorkers); // Unique seeds per worker
+                baseRange = Math.ceil(totalSearchRange / numWorkers);
             }
-            
-            workersToLaunch = numWorkers; 
-            
-            // 進捗追跡用の状態オブジェクトを定義
+
+            let workersToLaunch = numWorkers;
             let searchTracking = {
                 totalSearchRange: totalSearchRange,
                 numWorkers: numWorkers,
                 baseRange: baseRange,
-                processedByWorker: new Array(numWorkers).fill(0), // ワーカーが処理した総ステップ数（重複含む）
-                totalProcessedUnique: 0, // ユニークな処理件数（表示用）
+                processedByWorker: new Array(numWorkers).fill(0),
             };
 
-
-            isSearching = true;
             fullCounterSearchButton.disabled = partialSearchButton.disabled = true;
             fullCounterSearchButton.textContent = '検索中...';
             partialSearchButton.textContent = '検索中...';
-
             clearButton.classList.add('hidden-control');
             stopButton.style.display = 'inline-block';
-            
-            let searchMethodName = '';
-            let noteText = '';
-            if (mode === 'full_counter') {
-                searchMethodName = '全件検索（連番）';
-                noteText = `SEED: ${initialStartSeed} からの連番で全件（約43億件）を並列分割検索します。`;
-                fullCounterSearchButton.textContent = '検索中...';
-            } else if (mode === 'partial_xorshift') {
-                searchMethodName = '近接検索（XORSHIFT32順）部分検索';
-                noteText = `SEED: ${initialStartSeed} からのXORSHIFT32順で${searchRangeValue.toLocaleString()}件をJump Aheadで並列分割検索します。`;
-            }
 
-            startSeedNote.textContent = noteText;
-            
-            let workersFinished = 0;
-            
-            statusEl.textContent = `${numWorkers}個のワーカーで${searchMethodName}を開始しました...`;
-            progressContainer.style.display = 'block';
-            progressBar.value = 0;
-            etaDisplay.textContent = '';
+            if (!overrideSearchMode) {
+                let searchMethodName = '';
+                let noteText = '';
+                if (baseMode === 'full_counter') {
+                    searchMethodName = '全件検索（連番）';
+                    noteText = `SEED: ${initialStartSeed} からの連番で全件（約43億件）を並列分割検索します。`;
+                } else if (baseMode === 'partial_xorshift') {
+                    searchMethodName = '近接検索（XORSHIFT32順）部分検索';
+                    noteText = `SEED: ${initialStartSeed} からのXORSHIFT32順で${searchRangeValue.toLocaleString()}件をJump Aheadで並列分割検索します。`;
+                }
+                startSeedNote.textContent = noteText;
+                statusEl.textContent = `${numWorkers}個のワーカーで${searchMethodName}を開始しました...`;
+                progressContainer.style.display = 'block';
+                progressBar.value = 0;
+                etaDisplay.textContent = '';
+            }
 
             const startTime = performance.now();
             const formatETA = (ms) => {
@@ -901,37 +930,20 @@
                 return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
             };
 
-            const terminateAllWorkers = () => {
-                activeWorkers.forEach(worker => worker.terminate());
-                activeWorkers = [];
-            };
-            
-            const resetUI = (message) => {
-                isSearching = false;
-                fullCounterSearchButton.disabled = partialSearchButton.disabled = false;
-                fullCounterSearchButton.textContent = '全件検索'; // 修正
-                partialSearchButton.textContent = '近接検索（部分）';
-                clearButton.classList.remove('hidden-control');
-                stopButton.style.display = 'none';
-                progressContainer.style.display = 'none';
-                foundLimitMessage.style.display = foundCount > MAX_DISPLAY_COUNT ? 'block' : 'none'; 
-                startSeedNote.textContent = '過去の SEED が分かれば、そのSEEDに続くSEEDを検索します。全件検索ではないため、近接した範囲内にSEEDがない場合は見つけることが出来ません。';
-                if (message) statusEl.textContent = message;
-                terminateAllWorkers(); 
-            };
-
+            let workersFinished = 0;
+            let searchEndedByFound = false;
 
             const workerMessageHandler = (e) => {
-                const { type, seed, processed, finalSeed, workerIndex } = e.data; 
-                
-                if (searchEndedByFound) { e.target.terminate(); return; }
+                const { type, seed, processed, finalSeed, workerIndex } = e.data;
+
+                if (searchEndedByFound) {
+                    e.target.terminate();
+                    return;
+                }
 
                 if (type === 'found') {
-                    if (foundSeeds.has(seed)) {
-                        return; 
-                    }
+                    if (foundSeeds.has(seed)) return;
                     foundSeeds.add(seed);
-
                     foundCount++;
                     if (foundCount <= MAX_DISPLAY_COUNT) {
                         const li = document.createElement('li');
@@ -940,239 +952,127 @@
                     } else if (foundCount === MAX_DISPLAY_COUNT + 1) {
                         foundLimitMessage.style.display = 'block';
                     }
-                } else if (type === 'progress' || type === 'stop_found' || type === 'done') {
-                    if (workerIndex === 0 && type === 'progress') {
-                        worker0Progress += processed;
-                    }
+                } else if (type === 'progress') {
+                    searchTracking.processedByWorker[workerIndex] += processed;
+                    const totalProcessed = searchTracking.processedByWorker.reduce((sum, val) => sum + val, 0);
                     
-                    const tracking = searchTracking; 
-                    const baseRange = tracking.baseRange;
+                    const progress = Math.min(totalProcessed / searchTracking.totalSearchRange, 1.0);
                     
-                    // 1. ワーカーが処理した総ステップ数を更新
-                    const oldTotalSteps = tracking.processedByWorker[workerIndex];
-                    const newTotalSteps = oldTotalSteps + processed;
-
-                    // 2. 【修正ロジック】ユニークな貢献度のみを計算
-                    let newUniqueProcessed = 0;
-                    
-                    // The search space is now the priority seed space for inverse search (full_counter)
-                    // or the regular seed space for forward search.
-                    const currentTotalSearchRange = (searchMode === 'full_counter' && priorityChecks.length > 0) 
-                        ? priorityChecks[0].mod 
-                        : tracking.totalSearchRange;
-
-                    if (searchMode === 'full_counter' && priorityChecks.length > 0) {
-                        // For inverse search, progress is linear within the mod range
-                        newUniqueProcessed = processed;
-                    } else if (isCounterSearch) {
-                        // For forward counter search
-                        newUniqueProcessed = Math.min(newTotalSteps, baseRange) - Math.min(oldTotalSteps, baseRange);
-                    } else {
-                        // For forward xorshift search
-                        if (workerIndex === 0) {
-                            const uniqueMax = baseRange;
-                            newUniqueProcessed = Math.min(newTotalSteps, uniqueMax) - Math.min(oldTotalSteps, uniqueMax);
-                        } else {
-                            const nonOverlappingStart = OVERLAP_COUNT;
-                            const newPastOverlap = Math.max(0, newTotalSteps - nonOverlappingStart);
-                            const oldPastOverlap = Math.max(0, oldTotalSteps - nonOverlappingStart);
-                            newUniqueProcessed = Math.min(newPastOverlap, baseRange) - Math.min(oldPastOverlap, baseRange);
-                        }
-                    }
-
-                    tracking.totalProcessedUnique += newUniqueProcessed;
-                    tracking.processedByWorker[workerIndex] = newTotalSteps;
-                    
-                    const progress = tracking.totalProcessedUnique / tracking.totalSearchRange;
-                    const displayProcessed = Math.min(tracking.totalProcessedUnique, tracking.totalSearchRange);
-
                     progressBar.value = progress;
-                    progressText.textContent = `${formatNumberWithJapaneseUnits(displayProcessed)} / ${formatNumberWithJapaneseUnits(tracking.totalSearchRange)} (${(progress * 100).toFixed(2)}%)`;
-                    
+                    progressText.textContent = `${(progress * 100).toFixed(2)}%`;
+
                     const elapsedTime = performance.now() - startTime;
-                    if (elapsedTime > 200 && tracking.totalProcessedUnique > 0) {
-                        const speed = displayProcessed / elapsedTime;
-                        const etaMs = (tracking.totalSearchRange - displayProcessed) / speed;
-                        etaDisplay.textContent = `推定残り時間: ${formatETA(etaMs)}`;
-                    }
-                }
-                
-                // -----------------------------------------------------------
-
-                if (type === 'stop_found') {
-                    
-                    if (seed && !foundSeeds.has(seed)) {
-                        foundSeeds.add(seed);
-                        foundCount++;
-                    }
-
-                    searchEndedByFound = true;
-                    finalSearchedSeed = finalSeed;
-                    
-                    const duration = performance.now() - startTime;
-                    const displayProcessed = Math.min(searchTracking.totalProcessedUnique, totalSearchRange);
-
-                    let finalMessage = `SEED発見により探索を停止: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
-
-                    terminateAllWorkers();
-
-                    let nextStartSeed = null;
-                    let finalSeedMsg = '';
-
-                    if (finalSearchedSeed !== null) {
-                        if (mode === 'partial_xorshift') {
-                            nextStartSeed = xorshift32(finalSearchedSeed);
-                            if (nextStartSeed === 0) nextStartSeed = 1;
-                            // finalSeedMsg is intentionally kept empty for partial search on stop_found
-                        } else { // full_counter
-                            finalSeedMsg = ` 最終検索SEED: ${finalSearchedSeed}`;
+                    if (totalProcessed > 0 && progress > 0.01) {
+                        const eta = (elapsedTime / totalProcessed) * (searchTracking.totalSearchRange - totalProcessed);
+                        if (eta > 0) {
+                            etaDisplay.textContent = `残り時間: 約 ${formatETA(eta)}`;
                         }
                     }
-
-                    let fullMessage = finalMessage + finalSeedMsg;
-                    fullMessage += '\n\n条件に合致するSEEDを発見したため検索を終了しました。他の候補も検索したい場合は、「条件に合致するSEEDが見つかった場合、検索を終了する」のチェックを外して再度検索を実行してください。';
-                    
-                    resetUI(fullMessage);
-                    
-                    if (mode === 'partial_xorshift' && nextStartSeed !== null) {
-                         startSeedInput.value = nextStartSeed;
-                    } else if (mode === 'full_counter') { 
-                         startSeedInput.value = '1';
+                } else if (type === 'stop_found') {
+                    searchEndedByFound = true;
+                    const duration = performance.now() - startTime;
+                    resetUI(`探索完了: SEED ${seed} が見つかりました。(${formatShortDuration(duration)})`);
+                    if (baseMode === 'partial_xorshift') {
+                        startSeedInput.value = xorshift32(finalSeed);
                     }
-
                     updateUrl();
-                    return;
-                    
                 } else if (type === 'done') {
                     workersFinished++;
-                    
-                    if (finalSeed !== undefined) {// finalSeedはワーカーが検索を終えた最後のSEED
-                        if (searchMode === 'partial_xorshift' && workerIndex === 0) {
+                    if (finalSeed !== undefined) {
+                        if (baseMode === 'partial_xorshift' && workerIndex === 0) {
                             finalSearchedSeed = finalSeed;
-                        } else if (searchMode === 'full_counter' && workerIndex === workersToLaunch - 1) {
-                            // full_counterでは最後のワーカーの最終シード（この場合、検索範囲の終了点）を保持
+                        } else if (baseMode === 'full_counter' && workerIndex === workersToLaunch - 1) {
                             finalSearchedSeed = finalSeed;
                         }
                     }
-                    
-                    if (workersFinished === workersToLaunch) {
-                        const duration = performance.now() - startTime;
-                        
-                        let finalSeedMsg = '';
 
+                    if (workersFinished === workersToLaunch) {
+                        const params = new URLSearchParams(window.location.search);
+                        const nyankoFix = params.get('nyanko_fix') === '1';
+                        const firstRollValue = document.getElementById('item-selector-1') ? document.getElementById('item-selector-1').value : (document.querySelector('input[name="seeker-roll-1"]:checked') || {}).value;
+                        const firstItemId = itemNameMap[firstRollValue];
+                        const isFirstItemRare = (firstItemId !== undefined && itemRarityMap[firstItemId] === 1);
+
+                        if (searchMode !== 'rare_salvage' && isFirstItemRare && !nyankoFix) {
+                            terminateAllWorkers();
+                            statusEl.textContent += '\n\nレア被りの可能性を考慮して追加検索を実行します...';
+                            setTimeout(() => executeSearch(baseMode, 'rare_salvage'), 100);
+                            return;
+                        }
+
+                        const duration = performance.now() - startTime;
+                        let finalSeedMsg = '';
                         if (finalSearchedSeed !== null) {
-                            if (mode === 'partial_xorshift') {
-                                // ワーカー0の最終検索SEEDをstartSeedInputに設定
-                                finalSeedMsg = ` ワーカー０の最終検索SEED: ${finalSearchedSeed}`;
-                                startSeedInput.value = finalSearchedSeed; // ★ 変更点: finalSearchedSeedを設定
-                            } else { // full_counter
+                            if (baseMode === 'partial_xorshift') {
+                                finalSeedMsg = ` 次の検索開始SEED: ${finalSearchedSeed}`;
+                            } else {
                                 finalSeedMsg = ` 最終検索SEED: ${finalSearchedSeed} (全件検索完了)`;
                             }
                         }
-                        
-                        const displayProcessed = Math.min(searchTracking.totalProcessedUnique, totalSearchRange);
-                        
+                        const totalProcessed = searchTracking.processedByWorker.reduce((sum, val) => sum + (val || 0), 0);
+                        const displayProcessed = Math.min(Number(totalProcessed), totalSearchRange);
                         let finalMessage = `検索完了: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
-
-                        if (!isFullSearch && displayProcessed > 0 && duration > 10) {
+                        if (displayProcessed > 0 && duration > 10) {
                             const speed = displayProcessed / duration;
-                            const etaTotalMs = TOTAL_32_BIT_SPACE / speed; 
-                            const formattedEta = formatShortDuration(etaTotalMs); 
+                            const etaTotalMs = TOTAL_32_BIT_SPACE / speed;
+                            const formattedEta = formatShortDuration(etaTotalMs);
                             finalMessage += `\n(参考: 43億件の全探索には約 ${formattedEta} かかる見込みです)`;
                         }
-                        
                         resetUI(finalMessage + finalSeedMsg);
-                        
-                        if (mode === 'partial_xorshift' && nextStartSeed !== null) {
-                            startSeedInput.value = nextStartSeed;
-                        } else if (mode === 'full_counter') {
+                        if (baseMode === 'partial_xorshift' && finalSearchedSeed !== null) {
+                            startSeedInput.value = finalSearchedSeed;
+                        } else if (baseMode === 'full_counter') {
                             startSeedInput.value = '1';
                         }
-
                         updateUrl();
                     }
                 }
             };
-            
-            setTimeout(() => { // setTimeoutでワーカーの初期化を非同期に
-                
+
+            setTimeout(() => {
                 for (let i = 0; i < numWorkers; i++) {
                     const worker = new Worker('seeker_worker.js', { type: 'module' });
                     activeWorkers.push(worker);
-
                     worker.onmessage = workerMessageHandler;
-                    worker.onerror = (err) => {
-                        console.error('Worker Error:', err.message, 'at', err.filename, ':', err.lineno);
-                        worker.terminate();
-                        workersFinished++;
-                        if (workersFinished === workersToLaunch) resetUI('エラーが発生したため探索を中断しました。');
-                    };
+                    worker.onerror = (err) => { console.error(err); workersFinished++; if (workersFinished === workersToLaunch) resetUI('エラー発生'); };
                     
-                    let countForWorker;
-                    let totalIndex;
-                    let actualStartSeed;
-                    
-                    // --- Workerごとの開始SEEDと検索件数の計算 ---
+                    let countForWorker, totalIndex, actualStartSeed;
                     if (isCounterSearch) {
-                        // (1) 全件検索（連番）
-                        // 連番のため、Jump Aheadは使わず、単純な数値範囲で分割
                         totalIndex = i * baseRange;
                         countForWorker = baseRange;
-
-                        if (totalIndex >= totalSearchRange) {
-                            workersFinished++; 
-                            continue;
-                        }
-                        
+                        if (totalIndex >= totalSearchRange) { workersFinished++; continue; }
                         countForWorker = Math.min(countForWorker, totalSearchRange - totalIndex);
                         actualStartSeed = (initialStartSeed + totalIndex) >>> 0;
-
-                    } else { 
-                        // (2) 近接検索（XORSHIFT32順）
+                    } else {
                         if (i === 0) {
-                            // W0: 重複なし。S_startから開始。
                             totalIndex = 0;
                             countForWorker = baseRange;
-                        }
-                        else {
-                            // W1以降: 前のワーカーの終了インデックスから重複分(OVERLAP_COUNT)を戻したところから開始。
+                        } else {
                             totalIndex = (i * baseRange) - OVERLAP_COUNT;
                             countForWorker = baseRange + OVERLAP_COUNT;
-                            
-                            if (totalIndex >= totalSearchRange) {
-                                workersFinished++; 
-                                continue;
-                            }
-                            
+                            if (totalIndex >= totalSearchRange) { workersFinished++; continue; }
                             countForWorker = Math.min(countForWorker, totalSearchRange - totalIndex);
                         }
-
-                        if (countForWorker <= 0) { 
-                            workersFinished++; 
-                            continue;
-                        }
-
-                        // Jump Aheadで真の開始SEEDを計算
+                        if (countForWorker <= 0) { workersFinished++; continue; }
                         actualStartSeed = jumpAhead(initialStartSeed, totalIndex);
                     }
-                    // --- Workerごとの開始SEEDと検索件数の計算 終了 ---
-
-                    // --- 【修正点3】ワーカーへのメッセージに priorityChecks と 数値化されたシーケンスを含める ---
+                    
                     worker.postMessage({
                         workerIndex: i, 
                         initialStartSeed: actualStartSeed, 
                         count: countForWorker, 
                         gachaId,
-                        targetItemIdsForWorker: targetItemIdsForWorker, // 目玉(確定)を除外し数値化したシーケンス
-                        priorityChecks: priorityChecks, // 早期離脱条件
+                        targetItemIdsForWorker: targetItemIdsForWorker,
+                        priorityChecks: priorityChecks,
                         gachaData: gacha,
                         stopOnFound: stopOnFound,
-                        searchMode: mode,
+                        searchMode: searchMode,
+                        baseMode: baseMode,
                         completionState: completionState
                     });
                 }
                 if (numWorkers === workersFinished) resetUI('検索範囲が0のため、処理は行われませんでした。');
-            }, 10); 
+            }, 10);
         };
 
 
@@ -1201,6 +1101,7 @@
                 }
             }
             updateUrl();
+            updateRareItemsNote();
         });
         
         inputMethodRadios.forEach(radio => {
@@ -1213,16 +1114,11 @@
 
         completionStateSelect.addEventListener('change', () => {
             updateInputOptions(getCurrentInputMethod());
+            updateRareItemsNote();
             updateUrl();
         });
 
         startSeedInput.addEventListener('input', updateUrl);
-
-        
-        const terminateAllWorkers = () => {
-            activeWorkers.forEach(worker => worker.terminate());
-            activeWorkers = [];
-        };
 
         stopButton.addEventListener('click', () => {
             if (isSearching) {
@@ -1289,6 +1185,71 @@
         }
         
         updateUrl();
+
+        // --- レアアイテムリストの動的表示 ---
+        const updateRareItemsNote = () => {
+            const gacha = gachaMaster[currentGachaId];
+            if (!gacha) return;
+
+            const completionState = getCompletionState();
+            const rareItems = gacha.pool.map(id => itemMaster[id]).filter(item => item && item.rarity === 1).map(item => item.name);
+
+            const noteElement = document.querySelector('.sequence-inputs > .note');
+            const firstRollNoteElement = document.getElementById('first-roll-note');
+
+            const line1 = '1回目は目玉、目玉(確定)は選択できません';
+            const line2 = `1回目にレア被りの可能性のあるアイテム（${rareItems.join(', ')}）が入力されている場合は、検索時間が長くなることがあります`;
+            const line3 = '2回目以降は、目玉と目玉(確定)を区別して入力してください';
+
+            if (noteElement) {
+                if (completionState === 'completed') {
+                    noteElement.innerHTML = line2;
+                } else {
+                    noteElement.innerHTML = `${line1}<br>${line2}<br>${line3}`;
+                }
+            }
+
+            if (firstRollNoteElement) {
+                const currentInputMethod = getCurrentInputMethod();
+                let firstRollValue = '';
+                if (currentInputMethod === INPUT_METHOD_SELECT) {
+                    const select = document.getElementById('item-selector-1');
+                    if (select) firstRollValue = select.value;
+                } else {
+                    const radio = document.querySelector('input[name="seeker-roll-1"]:checked');
+                    if (radio) firstRollValue = radio.value;
+                }
+
+                const itemId = itemNameMap[firstRollValue];
+                const isRare = (itemId !== undefined && itemRarityMap[itemId] === 1);
+
+                if (isRare) {
+                    const fixText = 'ただし、直前ににゃんこガチャを１回回すとレア被りが起こらなくなります';
+                    const checkboxHtml = `<label style="font-weight: normal; display: block; margin-top: 3px;"><input type="checkbox" id="nyanko-gacha-fix" style="width: auto; vertical-align: middle; margin-right: 3px;">直前ににゃんこガチャを１回回している</label>`;
+                    firstRollNoteElement.innerHTML = `${line2}<br>${fixText}${checkboxHtml}`;
+                    
+                    const nyankoFixCheckbox = document.getElementById('nyanko-gacha-fix');
+                    if (nyankoFixCheckbox) {
+                        // URLパラメータから状態を復元
+                        const params = new URLSearchParams(window.location.search);
+                        if (params.get('nyanko_fix') === '1') {
+                            nyankoFixCheckbox.checked = true;
+                        }
+                        // イベントリスナーを追加
+                        nyankoFixCheckbox.addEventListener('change', updateUrl);
+                    }
+
+                } else {
+                    firstRollNoteElement.innerHTML = '';
+                }
+            }
+        };
+
+        // 初期表示時に実行
+        updateRareItemsNote();
+
+        // ガチャの状態が変わった時にも更新
+        completionStateSelect.addEventListener('change', updateRareItemsNote);
     });
 </script>
 </body>
