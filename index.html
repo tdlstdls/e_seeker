@@ -618,6 +618,7 @@
         let finalSearchedSeed = null; 
         let worker0Progress = 0;
         const MAX_DISPLAY_COUNT = 20; 
+        let totalSearchTimeMs = 0; // ★修正: 合計経過時間 (ミリ秒)
         
         
         // 【統合・修正】プルダウンリスト/ラジオボタンのオプションを生成・設定する関数
@@ -805,6 +806,7 @@
                 seedResultsNote.style.display = 'none'; // 検索開始時に非表示
                 worker0Progress = 0;
                 finalSearchedSeed = null;
+                totalSearchTimeMs = 0; // ★修正: 1巡目の検索開始時に合計時間をリセット
             }
 
             const gachaId = currentGachaId;
@@ -1013,20 +1015,32 @@
                     }
 
                     if (workersFinished === workersToLaunch) {
+                        
+                        const duration = performance.now() - startTime;
+                        totalSearchTimeMs += duration; // ★修正: ラウンド経過時間を合計時間に加算
+                        
                         const params = new URLSearchParams(window.location.search);
                         const nyankoFix = params.get('nyanko_fix') === '1';
                         const firstRollValue = document.getElementById('item-selector-1') ? document.getElementById('item-selector-1').value : (document.querySelector('input[name="seeker-roll-1"]:checked') || {}).value;
                         const firstItemId = itemNameMap[firstRollValue];
                         const isFirstItemRare = (firstItemId !== undefined && itemRarityMap[firstItemId] === 1);
+                        
+                        const totalProcessed = searchTracking.processedByWorker.reduce((sum, val) => sum + (val || 0), 0);
+                        const displayProcessed = Math.min(Number(totalProcessed), totalSearchRange);
 
                         if (searchMode !== 'rare_salvage' && isFirstItemRare && !nyankoFix) {
                             terminateAllWorkers();
-                            statusEl.textContent += '\n\nレア被りの可能性を考慮して追加検索を実行します...';
+                            
+                            // ★修正: ステータス表示に累積時間を使用
+                            const elapsedDuration = formatShortDuration(totalSearchTimeMs);
+                            statusEl.textContent = `1巡目検索完了: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${elapsedDuration}で探索。レア被りの可能性を考慮して追加検索を実行します...`;
+
                             setTimeout(() => executeSearch(baseMode, 'rare_salvage'), 100);
                             return;
                         }
 
-                        const duration = performance.now() - startTime;
+                        // 最終完了の場合
+                        const finalDuration = totalSearchTimeMs; // ★変更: 累積時間を使用
                         let finalSeedMsg = '';
                         if (finalSearchedSeed !== null) {
                             if (baseMode === 'partial_xorshift') {
@@ -1035,11 +1049,12 @@
                                 finalSeedMsg = ` 最終検索SEED: ${finalSearchedSeed} (全件検索完了)`;
                             }
                         }
-                        const totalProcessed = searchTracking.processedByWorker.reduce((sum, val) => sum + (val || 0), 0);
-                        const displayProcessed = Math.min(Number(totalProcessed), totalSearchRange);
-                        let finalMessage = `検索完了: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${formatShortDuration(duration)}で探索し、${foundCount}件見つかりました。`;
-                        if (displayProcessed > 0 && duration > 10) {
-                            const speed = displayProcessed / duration;
+                        
+                        // ★修正: finalDuration (累積時間) を使用
+                        let finalMessage = `検索完了: ${formatNumberWithJapaneseUnits(displayProcessed)} SEEDを ${formatShortDuration(finalDuration)}で探索し、${foundCount}件見つかりました。`;
+                        
+                        if (displayProcessed > 0 && finalDuration > 10) {
+                            const speed = displayProcessed / finalDuration;
                             const etaTotalMs = TOTAL_32_BIT_SPACE / speed;
                             const formattedEta = formatShortDuration(etaTotalMs);
                             finalMessage += `\n(参考: 43億件の全探索には約 ${formattedEta} かかる見込みです)`;
@@ -1251,7 +1266,7 @@
 
                 if (isRare) {
                     const fixText = 'ただし、直前ににゃんこガチャを１回回すとレア被りが起こらなくなります';
-                    const checkboxHtml = `<label style="font-weight: normal; display: block; margin-top: 3px;"><input type="checkbox" id="nyanko-gacha-fix" style="width: auto; vertical-align: middle; margin-right: 3px;">直前ににゃんこガチャを１回回している</label>`;
+                    const checkboxHtml = `<label style="font-weight: normal; display: block; margin-top: 3px;"><input type="checkbox" id="nyanko-gacha-fix" style="width: auto; vertical-align: middle; margin-right: 3px;">直前ににゃんこガチャを１回回している (ここにチェックを入れるとレア被りを考慮した再検索を行いません)</label>`;
                     firstRollNoteElement.innerHTML = `${line2}<br>${fixText}${checkboxHtml}`;
                     
                     const nyankoFixCheckbox = document.getElementById('nyanko-gacha-fix');
