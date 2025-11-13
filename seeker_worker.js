@@ -257,7 +257,61 @@ function performInverseSearch(initialPrioritySeed, count, targetItemIds, priorit
     postMessage({ type: 'done', processed: count, workerIndex });
 }
 
-function rareSalvageForwardVerification(startSeed, targetItemIds, completionState) {
+function performRareSalvageForwardSearch(initialStartSeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, searchMode, completionState, guaranteedSlot) {
+    let processedCount = 0;
+    let currentSeedToTest = initialStartSeed;
+    const isCounterSearch = (searchMode === 'full_counter');
+    const PROGRESS_INTERVAL = 100000;
+
+    for (let i = 0; i < count; i++) {
+        let isSeedValid = true;
+        if (priorityChecks.length > 0) {
+            const check = priorityChecks[0];
+            const { seedIndex, mod, op, value1, totalSeedOffset } = check;
+            let rollStartSeed = currentSeedToTest;
+            for (let j = 0; j < totalSeedOffset; j++) {
+                rollStartSeed = xorshift32_js(rollStartSeed);
+            }
+            let checkSeed = rollStartSeed;
+            for (let j = 0; j < seedIndex; j++) {
+                checkSeed = xorshift32_js(checkSeed);
+            }
+            if (!checkCondition(checkSeed % mod, op, value1)) {
+                isSeedValid = false;
+            }
+        }
+
+        if (isSeedValid) {
+            const verificationResult = rareSalvageForwardVerification(currentSeedToTest, targetItemIds, completionState, guaranteedSlot);
+            if (verificationResult.verified) {
+                postMessage({ type: 'found', seed: currentSeedToTest, workerIndex, lr: verificationResult.dupedItemId });
+                if (stopOnFound) {
+                    postMessage({ type: 'stop_found', seed: currentSeedToTest, finalSeed: currentSeedToTest, workerIndex, processed: processedCount, lr: verificationResult.dupedItemId });
+                    return;
+                }
+            }
+        }
+
+        processedCount++;
+        if (processedCount % PROGRESS_INTERVAL === 0) {
+            postMessage({ type: 'progress', processed: PROGRESS_INTERVAL, workerIndex });
+        }
+
+        if (isCounterSearch) {
+            currentSeedToTest = (currentSeedToTest + 1) >>> 0;
+        } else {
+            currentSeedToTest = xorshift32_js(currentSeedToTest);
+        }
+    }
+
+    const remaining = processedCount % PROGRESS_INTERVAL;
+    if (remaining > 0) {
+        postMessage({ type: 'progress', processed: remaining, workerIndex });
+    }
+    postMessage({ type: 'done', processed: count, finalSeed: currentSeedToTest, workerIndex });
+}
+
+function rareSalvageForwardVerification(startSeed, targetItemIds, completionState, guaranteedSlot = 0) {
     let currentSeed = startSeed;
     const firstTargetItemId = targetItemIds[0];
 
@@ -305,7 +359,7 @@ function rareSalvageForwardVerification(startSeed, targetItemIds, completionStat
     
     const remainingTargetIds = targetItemIds.slice(1);
     if (remainingTargetIds.length > 0) {
-        if (!fullForwardVerification(currentSeed, remainingTargetIds, completionState, rerolledItemId)) {
+        if (!fullForwardVerification(currentSeed, remainingTargetIds, completionState, rerolledItemId, guaranteedSlot)) {
             return { verified: false };
         }
     }
@@ -313,10 +367,10 @@ function rareSalvageForwardVerification(startSeed, targetItemIds, completionStat
     return { verified: true, dupedItemId: dupedItemId };
 }
 
-function performRareSalvageSearch(initialPrioritySeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, completionState) {
+function performRareSalvageSearch(initialPrioritySeed, count, targetItemIds, priorityChecks, stopOnFound, workerIndex, completionState, guaranteedSlot) {
     // If there are no priority checks, we must do a full forward search.
     if (priorityChecks.length === 0) {
-        performRareSalvageForwardSearch(initialPrioritySeed, count, targetItemIds, [], stopOnFound, workerIndex, 'full_counter', completionState);
+        performRareSalvageForwardSearch(initialPrioritySeed, count, targetItemIds, [], stopOnFound, workerIndex, 'full_counter', completionState, guaranteedSlot);
         return;
     }
 
@@ -336,7 +390,7 @@ function performRareSalvageSearch(initialPrioritySeed, count, targetItemIds, pri
                 startSeedCandidate = inverse_xorshift32_js(startSeedCandidate);
             }
 
-            const verificationResult = rareSalvageForwardVerification(startSeedCandidate, targetItemIds, completionState);
+            const verificationResult = rareSalvageForwardVerification(startSeedCandidate, targetItemIds, completionState, guaranteedSlot);
             if (verificationResult.verified) {
                 postMessage({ type: 'found', seed: startSeedCandidate, workerIndex, lr: verificationResult.dupedItemId });
                 if (stopOnFound) {
@@ -382,7 +436,7 @@ self.onmessage = async function(e) {
     itemRarityMap = Object.fromEntries(Object.entries(gachaData.rarityItems).flatMap(([rarity, items]) => items.map(id => [id, parseInt(rarity, 10)])));
 
     if (searchMode === 'rare_salvage') {
-        performRareSalvageForwardSearch(initialStartSeed, count, targetItemIdsForWorker, [], stopOnFound, workerIndex, baseMode, completionState);
+        performRareSalvageForwardSearch(initialStartSeed, count, targetItemIdsForWorker, [], stopOnFound, workerIndex, baseMode, completionState, guaranteedSlot);
     } else if (searchMode === 'full_counter' && priorityChecks.length > 0) {
         performInverseSearch(initialStartSeed, count, targetItemIdsForWorker, priorityChecks, stopOnFound, workerIndex, completionState, guaranteedSlot);
     } else { 
